@@ -1,0 +1,12 @@
+# IDE and local tool metadata
+.idea/
+.agents/
+*.iml
+
+# Build output and dependencies
+target/
+node_modules/
+dist/
+
+# Runtime logs
+*.log

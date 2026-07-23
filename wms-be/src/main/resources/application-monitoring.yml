@@ -1,0 +1,21 @@
+management:
+  server:
+    port: ${MANAGEMENT_PORT:9091}
+    address: ${MANAGEMENT_ADDRESS:0.0.0.0}
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+  metrics:
+    distribution:
+      percentiles-histogram:
+        "[http.server.requests]": true
+        "[wms.business.operation]": true
+      slo:
+        "[http.server.requests]": 100ms,300ms,1s,3s
+        "[wms.business.operation]": 100ms,500ms,2s,10s,30s
