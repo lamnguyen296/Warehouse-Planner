@@ -52,6 +52,7 @@ const WarehouseForm = ({ initialData, onSubmit, onCancel }) => {
           value={formData.type} 
           onChange={handleChange}
           className="input-field"
+          disabled={Boolean(initialData)}
         >
           <option value="WORKSHOP">Workshop</option>
           <option value="SET_WAREHOUSE">Set Warehouse</option>

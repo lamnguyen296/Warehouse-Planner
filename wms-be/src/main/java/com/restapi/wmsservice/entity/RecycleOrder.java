@@ -43,6 +43,9 @@ public class RecycleOrder extends BaseEntity {
     @Column(name = "expected_yield")
     Integer expectedYield;
 
+    @Column(name = "conversion_ratio", nullable = false)
+    Integer conversionRatio;
+
     @Column(name = "actual_yield")
     Integer actualYield;
 

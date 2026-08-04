@@ -19,6 +19,9 @@ public enum ErrorCode {
     WAREHOUSE_NOT_FOUND(2001, "Warehouse not found", HttpStatus.NOT_FOUND),
     WAREHOUSE_CODE_EXISTED(2002, "Warehouse code existed", HttpStatus.BAD_REQUEST),
     ACTIVE_WAREHOUSE_TYPE_EXISTED(2011, "Only one active warehouse is allowed for each warehouse type", HttpStatus.CONFLICT),
+    MASTER_DATA_IDENTITY_IMMUTABLE(2012, "Business identity fields cannot be changed after creation", HttpStatus.CONFLICT),
+    ITEM_NOT_ACTIVE(2013, "Item must be active for this operation", HttpStatus.BAD_REQUEST),
+    LOCATION_NOT_OPERATIONAL(2014, "Location is under maintenance and cannot receive stock", HttpStatus.CONFLICT),
     LOCATION_NOT_FOUND(2003, "Location not found", HttpStatus.NOT_FOUND),
     LOCATION_CODE_EXISTED(2004, "Location code existed", HttpStatus.BAD_REQUEST),
     ITEM_NOT_FOUND(2005, "Item not found", HttpStatus.NOT_FOUND),
@@ -71,9 +74,10 @@ public enum ErrorCode {
     // Phase 6 – Planning Engine Flow (6100–6199)
     WORKSHOP_REQUEST_NOT_APPROVED(6101, "Workshop request must be in APPROVED status to run planning", HttpStatus.BAD_REQUEST),
     PLANNING_ENGINE_NO_BOM(6102, "No BOM definition found for SET item, cannot run planning", HttpStatus.BAD_REQUEST),
-    PLANNING_ALREADY_RUNNING(6103, "A planning is already in PLANNING status for this request", HttpStatus.BAD_REQUEST),
+    PLANNING_ALREADY_RUNNING(6103, "An active planning already exists for this request", HttpStatus.CONFLICT),
     PLANNING_NOT_EDITABLE(6104, "Planning cannot be modified in current status", HttpStatus.BAD_REQUEST),
     PLANNING_QUANTITY_OVERFLOW(6105, "Calculated planning quantity exceeds supported range", HttpStatus.BAD_REQUEST),
+    BOM_LOCKED_BY_ACTIVE_PLANNING(6106, "BOM cannot be changed while a planning is active", HttpStatus.CONFLICT),
 
     // Phase 6 – Inventory Operations Flow (6200–6299)
     INSUFFICIENT_AVAILABLE_STOCK(6201, "Insufficient available stock to reserve", HttpStatus.BAD_REQUEST),

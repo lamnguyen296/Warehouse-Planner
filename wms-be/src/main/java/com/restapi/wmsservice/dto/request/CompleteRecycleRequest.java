@@ -14,6 +14,6 @@ public class CompleteRecycleRequest {
 
     /** Số lượng FINISHED_COMPONENT thực tế tạo ra (có thể nhỏ hơn input quantity do yield loss). */
     @NotNull(message = "ACTUAL_YIELD_REQUIRED")
-    @Min(value = 1, message = "ACTUAL_YIELD_MIN")
+    @Min(value = 0, message = "ACTUAL_YIELD_MIN")
     Integer actualYield;
 }

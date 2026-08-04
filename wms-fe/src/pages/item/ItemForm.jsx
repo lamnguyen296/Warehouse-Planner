@@ -102,6 +102,7 @@ const ItemForm = ({ initialData, onSubmit, onCancel }) => {
             value={formData.itemType} 
             onChange={handleChange}
             className="input-field"
+            disabled={Boolean(initialData)}
           >
             <option value="RAW_COMPONENT">Raw Component</option>
             <option value="FINISHED_COMPONENT">Finished Component</option>

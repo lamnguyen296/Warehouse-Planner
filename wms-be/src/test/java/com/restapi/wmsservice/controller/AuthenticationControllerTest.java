@@ -2,14 +2,17 @@ package com.restapi.wmsservice.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.restapi.wmsservice.configuration.CustomJwtDecoder;
+import com.restapi.wmsservice.configuration.AuthCookieProperties;
 import com.restapi.wmsservice.configuration.SecurityConfig;
 import com.restapi.wmsservice.dto.request.AuthenticationRequest;
-import com.restapi.wmsservice.dto.request.RefreshRequest;
-import com.restapi.wmsservice.dto.response.AuthenticationResponse;
 import com.restapi.wmsservice.exception.AppException;
 import com.restapi.wmsservice.exception.ErrorCode;
 import com.restapi.wmsservice.exception.GlobalExceptionHandler;
+import com.restapi.wmsservice.security.AuthCookieService;
+import com.restapi.wmsservice.security.CookieBearerTokenResolver;
+import com.restapi.wmsservice.security.IssuedTokens;
 import com.restapi.wmsservice.service.AuthenticationService;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -18,8 +21,14 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.util.Optional;
+
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -43,6 +52,21 @@ class AuthenticationControllerTest {
     @MockitoBean
     CustomJwtDecoder customJwtDecoder;
 
+    @MockitoBean
+    CookieBearerTokenResolver cookieBearerTokenResolver;
+
+    @MockitoBean
+    AuthCookieProperties authCookieProperties;
+
+    @MockitoBean
+    AuthCookieService authCookieService;
+
+    @BeforeEach
+    void setUpCookies() {
+        when(authCookieProperties.getSameSite()).thenReturn("Lax");
+        when(authCookieService.getRefreshToken(any())).thenReturn(Optional.of(REFRESH_TOKEN));
+    }
+
     @Test
     void login_inactive_returnsHttp401AndNoTokens() throws Exception {
         when(authenticationService.authenticate(any(AuthenticationRequest.class)))
@@ -61,18 +85,18 @@ class AuthenticationControllerTest {
 
     @Test
     void refresh_inactive_returnsHttp401AndNoTokens() throws Exception {
-        when(authenticationService.refreshToken(any(RefreshRequest.class)))
+        when(authenticationService.refreshToken(REFRESH_TOKEN))
                 .thenThrow(new AppException(ErrorCode.ACCOUNT_INACTIVE));
 
-        assertAuthenticationError("/auth/refresh", refreshRequest(), ErrorCode.ACCOUNT_INACTIVE);
+        assertAuthenticationError("/auth/refresh", null, ErrorCode.ACCOUNT_INACTIVE);
     }
 
     @Test
     void refresh_locked_returnsHttp401AndNoTokens() throws Exception {
-        when(authenticationService.refreshToken(any(RefreshRequest.class)))
+        when(authenticationService.refreshToken(REFRESH_TOKEN))
                 .thenThrow(new AppException(ErrorCode.ACCOUNT_LOCKED));
 
-        assertAuthenticationError("/auth/refresh", refreshRequest(), ErrorCode.ACCOUNT_LOCKED);
+        assertAuthenticationError("/auth/refresh", null, ErrorCode.ACCOUNT_LOCKED);
     }
 
     @Test
@@ -88,7 +112,7 @@ class AuthenticationControllerTest {
         when(authenticationService.authenticate(any(AuthenticationRequest.class)))
                 .thenThrow(new AppException(ErrorCode.USER_NOT_EXISTED));
 
-        mockMvc.perform(post("/auth/token")
+        mockMvc.perform(post("/auth/token").with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsBytes(loginRequest())))
                 .andExpect(status().isNotFound())
@@ -102,20 +126,31 @@ class AuthenticationControllerTest {
                 .thenReturn(successfulResponse());
 
         assertAuthenticationSuccess("/auth/token", loginRequest());
+        verify(authCookieService).addAuthenticationCookies(any(), eq(successfulResponse()));
+    }
+
+    @Test
+    void login_withoutCsrfToken_isRejected() throws Exception {
+        mockMvc.perform(post("/auth/token")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(loginRequest())))
+                .andExpect(status().isForbidden());
+        verifyNoInteractions(authenticationService);
     }
 
     @Test
     void refresh_active_preservesSuccessfulResponse() throws Exception {
-        when(authenticationService.refreshToken(any(RefreshRequest.class)))
+        when(authenticationService.refreshToken(REFRESH_TOKEN))
                 .thenReturn(successfulResponse());
 
-        assertAuthenticationSuccess("/auth/refresh", refreshRequest());
+        assertAuthenticationSuccess("/auth/refresh", null);
+        verify(authCookieService).addAuthenticationCookies(any(), eq(successfulResponse()));
     }
 
     private void assertAuthenticationError(String endpoint, Object request, ErrorCode errorCode) throws Exception {
-        mockMvc.perform(post(endpoint)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsBytes(request)))
+        var requestBuilder = post(endpoint).with(csrf()).contentType(MediaType.APPLICATION_JSON);
+        if (request != null) requestBuilder.content(objectMapper.writeValueAsBytes(request));
+        mockMvc.perform(requestBuilder)
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value(errorCode.getCode()))
                 .andExpect(jsonPath("$.result").doesNotExist())
@@ -124,12 +159,12 @@ class AuthenticationControllerTest {
     }
 
     private void assertAuthenticationSuccess(String endpoint, Object request) throws Exception {
-        mockMvc.perform(post(endpoint)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsBytes(request)))
+        var requestBuilder = post(endpoint).with(csrf()).contentType(MediaType.APPLICATION_JSON);
+        if (request != null) requestBuilder.content(objectMapper.writeValueAsBytes(request));
+        mockMvc.perform(requestBuilder)
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.result.accessToken").value(ACCESS_TOKEN))
-                .andExpect(jsonPath("$.result.refreshToken").value(REFRESH_TOKEN))
+                .andExpect(jsonPath("$..accessToken").doesNotExist())
+                .andExpect(jsonPath("$..refreshToken").doesNotExist())
                 .andExpect(jsonPath("$.result.authenticated").value(true));
     }
 
@@ -140,15 +175,7 @@ class AuthenticationControllerTest {
                 .build();
     }
 
-    private RefreshRequest refreshRequest() {
-        return RefreshRequest.builder().refreshToken(REFRESH_TOKEN).build();
-    }
-
-    private AuthenticationResponse successfulResponse() {
-        return AuthenticationResponse.builder()
-                .accessToken(ACCESS_TOKEN)
-                .refreshToken(REFRESH_TOKEN)
-                .authenticated(true)
-                .build();
+    private IssuedTokens successfulResponse() {
+        return new IssuedTokens(ACCESS_TOKEN, REFRESH_TOKEN);
     }
 }

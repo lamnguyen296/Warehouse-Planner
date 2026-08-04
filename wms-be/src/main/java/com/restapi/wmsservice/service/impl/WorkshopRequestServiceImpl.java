@@ -312,6 +312,9 @@ public class WorkshopRequestServiceImpl implements WorkshopRequestService {
             if (item.getItemType() != ItemType.SET) {
                 throw new AppException(ErrorCode.INVALID_ITEM_TYPE);
             }
+            if (item.getStatus() != com.restapi.wmsservice.enums.ItemStatus.ACTIVE) {
+                throw new AppException(ErrorCode.ITEM_NOT_ACTIVE);
+            }
 
             WorkshopRequestDetail detail = workshopRequestDetailMapper.toDetail(detailRequest);
             detail.setItem(item);

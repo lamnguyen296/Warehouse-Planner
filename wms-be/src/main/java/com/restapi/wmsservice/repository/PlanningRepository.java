@@ -37,6 +37,15 @@ public interface PlanningRepository extends JpaRepository<Planning, Long> {
     @EntityGraph(attributePaths = {"workshopRequest", "details", "details.item"})
     List<Planning> findByWorkshopRequestIdAndStatus(Long workshopRequestId, PlanningStatus status);
 
+    @EntityGraph(attributePaths = {"workshopRequest", "details", "details.item"})
+    List<Planning> findByWorkshopRequestIdAndStatusIn(
+            Long workshopRequestId, List<PlanningStatus> statuses);
+
+    boolean existsByWorkshopRequestIdAndStatusInAndIdNot(
+            Long workshopRequestId, List<PlanningStatus> statuses, Long excludedId);
+
+    boolean existsByStatusIn(List<PlanningStatus> statuses);
+
     /** Đếm số Planning theo requestId – dùng để sinh version number. */
     long countByWorkshopRequestId(Long workshopRequestId);
 

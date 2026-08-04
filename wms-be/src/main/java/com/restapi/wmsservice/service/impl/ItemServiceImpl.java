@@ -63,6 +63,10 @@ public class ItemServiceImpl implements ItemService {
         Item item = itemRepository.findById(id)
                 .orElseThrow(() -> new AppException(ErrorCode.ITEM_NOT_FOUND));
 
+        if (item.getItemType() != request.getItemType()) {
+            throw new AppException(ErrorCode.MASTER_DATA_IDENTITY_IMMUTABLE);
+        }
+
         if (!item.getCode().equals(request.getCode()) && itemRepository.existsByCode(request.getCode())) {
             throw new AppException(ErrorCode.ITEM_CODE_EXISTED);
         }

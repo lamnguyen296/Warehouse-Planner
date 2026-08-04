@@ -27,6 +27,8 @@ public class RecycleOrderResponse {
 
     Integer expectedYield;
 
+    Integer conversionRatio;
+
     Integer actualYield;
 
     RecycleStatus status;

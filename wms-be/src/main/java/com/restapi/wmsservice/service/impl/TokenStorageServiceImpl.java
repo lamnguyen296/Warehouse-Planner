@@ -29,6 +29,20 @@ public class TokenStorageServiceImpl implements TokenStorageService {
             return 1
             """, Long.class);
 
+    private static final DefaultRedisScript<Long> ROTATE_REFRESH_TOKEN_SCRIPT = new DefaultRedisScript<>("""
+            local current = redis.call('GET', KEYS[1])
+            if not current or current ~= ARGV[1] then
+                return 0
+            end
+            local ttl = tonumber(ARGV[4])
+            if not ttl or ttl <= 0 then
+                return redis.error_reply('Invalid refresh token TTL')
+            end
+            redis.call('SET', KEYS[1], ARGV[2], 'EX', ttl)
+            redis.call('SET', KEYS[2], ARGV[3], 'EX', ttl)
+            return 1
+            """, Long.class);
+
     private final StringRedisTemplate stringRedisTemplate;
 
     @Value("${jwt.refreshable-duration}")
@@ -45,6 +59,19 @@ public class TokenStorageServiceImpl implements TokenStorageService {
         if (!Long.valueOf(1L).equals(result)) {
             throw new IllegalStateException("Redis did not persist the refresh token family");
         }
+    }
+
+    @Override
+    public boolean rotateRefreshToken(String familyId, String username,
+                                      String currentRefreshToken, String newRefreshToken) {
+        Long result = stringRedisTemplate.execute(
+                ROTATE_REFRESH_TOKEN_SCRIPT,
+                List.of("rt_family:" + familyId, "rt:" + newRefreshToken),
+                currentRefreshToken,
+                newRefreshToken,
+                familyId + ":" + username,
+                String.valueOf(REFRESHABLE_DURATION));
+        return Long.valueOf(1L).equals(result);
     }
 
     public void blacklistAccessToken(String jit, long remainingTimeMs) {

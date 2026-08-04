@@ -9,6 +9,8 @@ import com.restapi.wmsservice.exception.ErrorCode;
 import com.restapi.wmsservice.mapper.BomMapper;
 import com.restapi.wmsservice.repository.BomRepository;
 import com.restapi.wmsservice.repository.ItemRepository;
+import com.restapi.wmsservice.repository.PlanningRepository;
+import com.restapi.wmsservice.enums.PlanningStatus;
 import com.restapi.wmsservice.service.BomService;
 import lombok.AccessLevel;
 import lombok.RequiredArgsConstructor;
@@ -29,11 +31,13 @@ public class BomServiceImpl implements BomService {
 
     BomRepository bomRepository;
     ItemRepository itemRepository;
+    PlanningRepository planningRepository;
     BomMapper bomMapper;
 
     @Override
     @Transactional
     public BomResponse create(BomRequest request) {
+        ensureBomIsMutable();
         if (request.getParentItemId().equals(request.getChildItemId())) {
             throw new AppException(ErrorCode.BOM_PARENT_CHILD_SAME);
         }
@@ -88,6 +92,7 @@ public class BomServiceImpl implements BomService {
     @Override
     @Transactional
     public BomResponse update(Long id, BomRequest request) {
+        ensureBomIsMutable();
         Bom bom = bomRepository.findById(id)
                 .orElseThrow(() -> new AppException(ErrorCode.BOM_NOT_FOUND));
 
@@ -127,6 +132,7 @@ public class BomServiceImpl implements BomService {
     @Override
     @Transactional
     public void delete(Long id) {
+        ensureBomIsMutable();
         if (!bomRepository.existsById(id)) {
             throw new AppException(ErrorCode.BOM_NOT_FOUND);
         }
@@ -138,11 +144,24 @@ public class BomServiceImpl implements BomService {
     }
 
     private void validateItemRelation(Item parent, Item child) {
+        if (parent.getStatus() != com.restapi.wmsservice.enums.ItemStatus.ACTIVE
+                || child.getStatus() != com.restapi.wmsservice.enums.ItemStatus.ACTIVE) {
+            throw new AppException(ErrorCode.ITEM_NOT_ACTIVE);
+        }
         boolean validParent = parent.getItemType() == com.restapi.wmsservice.enums.ItemType.SET
                 || parent.getItemType() == com.restapi.wmsservice.enums.ItemType.FINISHED_COMPONENT
                 || parent.getItemType() == com.restapi.wmsservice.enums.ItemType.RAW_COMPONENT;
         if (!validParent || child.getItemType() != com.restapi.wmsservice.enums.ItemType.FINISHED_COMPONENT) {
             throw new AppException(ErrorCode.INVALID_BOM_ITEM_RELATION);
+        }
+    }
+
+    private void ensureBomIsMutable() {
+        if (planningRepository.existsByStatusIn(List.of(
+                PlanningStatus.PLANNING,
+                PlanningStatus.APPROVED,
+                PlanningStatus.EXECUTING))) {
+            throw new AppException(ErrorCode.BOM_LOCKED_BY_ACTIVE_PLANNING);
         }
     }
 

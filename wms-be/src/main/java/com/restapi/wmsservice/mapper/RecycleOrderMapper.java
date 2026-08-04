@@ -19,6 +19,7 @@ public interface RecycleOrderMapper {
     @Mapping(target = "fromItem", ignore = true)
     @Mapping(target = "toItem", ignore = true)
     @Mapping(target = "expectedYield", ignore = true)
+    @Mapping(target = "conversionRatio", ignore = true)
     RecycleOrder toEntity(RecycleOrderRequest request);
 
     @Mapping(target = "planningDetailId", source = "planningDetail.id")
@@ -33,5 +34,6 @@ public interface RecycleOrderMapper {
     @Mapping(target = "fromItem", ignore = true)
     @Mapping(target = "toItem", ignore = true)
     @Mapping(target = "expectedYield", ignore = true)
+    @Mapping(target = "conversionRatio", ignore = true)
     void updateEntity(@MappingTarget RecycleOrder entity, RecycleOrderRequest request);
 }

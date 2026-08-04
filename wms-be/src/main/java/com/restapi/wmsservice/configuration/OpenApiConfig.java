@@ -16,16 +16,15 @@ import org.springframework.context.annotation.Configuration;
                 description = "API Documentation for WMS (Warehouse Management System)"
         ),
         security = {
-                @SecurityRequirement(name = "bearerAuth")
+                @SecurityRequirement(name = "cookieAuth")
         }
 )
 @SecurityScheme(
-        name = "bearerAuth",
-        description = "JWT Authentication Token",
-        scheme = "bearer",
-        type = SecuritySchemeType.HTTP,
-        bearerFormat = "JWT",
-        in = SecuritySchemeIn.HEADER
+        name = "cookieAuth",
+        description = "JWT access token stored in an HttpOnly cookie",
+        type = SecuritySchemeType.APIKEY,
+        in = SecuritySchemeIn.COOKIE,
+        paramName = "wms_access_token"
 )
 public class OpenApiConfig {
 }

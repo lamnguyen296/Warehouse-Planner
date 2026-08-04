@@ -1,7 +1,6 @@
 package com.restapi.wmsservice.service.impl;
 
 import com.restapi.wmsservice.dto.request.AuthenticationRequest;
-import com.restapi.wmsservice.dto.request.RefreshRequest;
 import com.restapi.wmsservice.entity.User;
 import com.restapi.wmsservice.enums.UserStatus;
 import com.restapi.wmsservice.exception.AppException;
@@ -59,14 +58,13 @@ class AuthenticationServiceImplTest {
 
         var response = authenticationService.authenticate(authenticationRequest(RAW_PASSWORD));
 
-        assertThat(response.isAuthenticated()).isTrue();
-        assertThat(response.getAccessToken()).isEqualTo(ACCESS_TOKEN);
-        assertThat(response.getRefreshToken()).isNotBlank();
+        assertThat(response.accessToken()).isEqualTo(ACCESS_TOKEN);
+        assertThat(response.refreshToken()).isNotBlank();
 
         ArgumentCaptor<String> familyIdCaptor = ArgumentCaptor.forClass(String.class);
         verify(jwtService).generateToken(eq(user), familyIdCaptor.capture());
         verify(tokenStorageService).saveRefreshToken(
-                eq(familyIdCaptor.getValue()), eq(USERNAME), eq(response.getRefreshToken()));
+                eq(familyIdCaptor.getValue()), eq(USERNAME), eq(response.refreshToken()));
     }
 
     @Test
@@ -121,13 +119,15 @@ class AuthenticationServiceImplTest {
         User user = user(UserStatus.ACTIVE);
         prepareRefresh(user);
         when(jwtService.generateToken(user, FAMILY_ID)).thenReturn(ACCESS_TOKEN);
+        when(tokenStorageService.rotateRefreshToken(
+                eq(FAMILY_ID), eq(USERNAME), eq(REFRESH_TOKEN), anyString())).thenReturn(true);
 
-        var response = authenticationService.refreshToken(refreshRequest());
+        var response = authenticationService.refreshToken(REFRESH_TOKEN);
 
-        assertThat(response.isAuthenticated()).isTrue();
-        assertThat(response.getAccessToken()).isEqualTo(ACCESS_TOKEN);
-        assertThat(response.getRefreshToken()).isNotBlank().isNotEqualTo(REFRESH_TOKEN);
-        verify(tokenStorageService).saveRefreshToken(FAMILY_ID, USERNAME, response.getRefreshToken());
+        assertThat(response.accessToken()).isEqualTo(ACCESS_TOKEN);
+        assertThat(response.refreshToken()).isNotBlank().isNotEqualTo(REFRESH_TOKEN);
+        verify(tokenStorageService).rotateRefreshToken(
+                FAMILY_ID, USERNAME, REFRESH_TOKEN, response.refreshToken());
     }
 
     @Test
@@ -136,7 +136,7 @@ class AuthenticationServiceImplTest {
         prepareRefresh(user);
 
         assertAuthenticationFailure(
-                () -> authenticationService.refreshToken(refreshRequest()),
+                () -> authenticationService.refreshToken(REFRESH_TOKEN),
                 ErrorCode.ACCOUNT_INACTIVE,
                 HttpStatus.UNAUTHORIZED);
         verifyNoTokenWrites(user);
@@ -148,7 +148,7 @@ class AuthenticationServiceImplTest {
         prepareRefresh(user);
 
         assertAuthenticationFailure(
-                () -> authenticationService.refreshToken(refreshRequest()),
+                () -> authenticationService.refreshToken(REFRESH_TOKEN),
                 ErrorCode.ACCOUNT_LOCKED,
                 HttpStatus.UNAUTHORIZED);
         verifyNoTokenWrites(user);
@@ -160,10 +160,21 @@ class AuthenticationServiceImplTest {
         prepareRefresh(user);
 
         assertAuthenticationFailure(
-                () -> authenticationService.refreshToken(refreshRequest()),
+                () -> authenticationService.refreshToken(REFRESH_TOKEN),
                 ErrorCode.UNAUTHENTICATED,
                 HttpStatus.UNAUTHORIZED);
         verifyNoTokenWrites(user);
+    }
+
+    @Test
+    void logout_withoutUsableAccessToken_stillInvalidatesRefreshFamily() {
+        when(tokenStorageService.getRefreshTokenData(REFRESH_TOKEN))
+                .thenReturn(FAMILY_ID + ":" + USERNAME);
+
+        authenticationService.logout(null, REFRESH_TOKEN);
+
+        verify(tokenStorageService).invalidateRefreshTokenFamily(FAMILY_ID);
+        verify(tokenStorageService, never()).blacklistAccessToken(anyString(), anyLong());
     }
 
     private void prepareRefresh(User user) {
@@ -188,13 +199,11 @@ class AuthenticationServiceImplTest {
                 .build();
     }
 
-    private RefreshRequest refreshRequest() {
-        return RefreshRequest.builder().refreshToken(REFRESH_TOKEN).build();
-    }
-
     private void verifyNoTokenWrites(User user) {
         verify(jwtService, never()).generateToken(eq(user), anyString());
         verify(tokenStorageService, never()).saveRefreshToken(anyString(), anyString(), anyString());
+        verify(tokenStorageService, never()).rotateRefreshToken(
+                anyString(), anyString(), anyString(), anyString());
         verify(tokenStorageService, never()).invalidateRefreshTokenFamily(anyString());
         verify(tokenStorageService, never()).blacklistAccessToken(anyString(), anyLong());
     }

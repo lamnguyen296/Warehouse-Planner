@@ -32,7 +32,7 @@ public class LocationServiceImpl implements LocationService {
     @Override
     @Transactional
     public LocationResponse create(LocationRequest request) {
-        if (locationRepository.existsByCode(request.getCode())) {
+        if (locationRepository.existsByWarehouseIdAndCode(request.getWarehouseId(), request.getCode())) {
             throw new AppException(ErrorCode.LOCATION_CODE_EXISTED);
         }
         Warehouse warehouse = warehouseRepository.findById(request.getWarehouseId())
@@ -75,15 +75,15 @@ public class LocationServiceImpl implements LocationService {
         Location location = locationRepository.findById(id)
                 .orElseThrow(() -> new AppException(ErrorCode.LOCATION_NOT_FOUND));
 
-        if (!location.getCode().equals(request.getCode()) && locationRepository.existsByCode(request.getCode())) {
+        if (!location.getWarehouse().getId().equals(request.getWarehouseId())) {
+            throw new AppException(ErrorCode.MASTER_DATA_IDENTITY_IMMUTABLE);
+        }
+        if (locationRepository.existsByWarehouseIdAndCodeAndIdNot(
+                request.getWarehouseId(), request.getCode(), id)) {
             throw new AppException(ErrorCode.LOCATION_CODE_EXISTED);
         }
 
-        Warehouse warehouse = warehouseRepository.findById(request.getWarehouseId())
-                .orElseThrow(() -> new AppException(ErrorCode.WAREHOUSE_NOT_FOUND));
-
         locationMapper.updateLocation(location, request);
-        location.setWarehouse(warehouse);
         
         location = locationRepository.save(location);
         return locationMapper.toLocationResponse(location);

@@ -10,6 +10,8 @@ import com.restapi.wmsservice.mapper.TransferOrderMapper;
 import com.restapi.wmsservice.repository.*;
 import com.restapi.wmsservice.service.TransferOrderService;
 import com.restapi.wmsservice.service.NotificationEventPublisher;
+import com.restapi.wmsservice.service.PlanningCompletionService;
+import com.restapi.wmsservice.security.CurrentActorProvider;
 import lombok.AccessLevel;
 import lombok.RequiredArgsConstructor;
 import lombok.experimental.FieldDefaults;
@@ -20,10 +22,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 /**
  * Phase 6 – Flow 4: Transfer Flow Implementation.
@@ -61,6 +61,8 @@ public class TransferOrderServiceImpl implements TransferOrderService {
     PlanningDetailRepository planningDetailRepository;
     InventoryReservationRepository reservationRepository;
     NotificationEventPublisher notificationEventPublisher;
+    CurrentActorProvider currentActorProvider;
+    PlanningCompletionService planningCompletionService;
 
     
 
@@ -264,6 +266,9 @@ public class TransferOrderServiceImpl implements TransferOrderService {
             if (!toLocation.getWarehouse().getId().equals(toWh.getId())) {
                 throw new AppException(ErrorCode.LOCATION_NOT_FOUND);
             }
+            if (toLocation.getStatus() == LocationStatus.MAINTENANCE) {
+                throw new AppException(ErrorCode.LOCATION_NOT_OPERATIONAL);
+            }
         } else {
             toLocation = getFirstLocation(toWh.getId());
         }
@@ -290,20 +295,12 @@ public class TransferOrderServiceImpl implements TransferOrderService {
         // Cập nhật TransferOrder status
         order.setStatus(TransferStatus.COMPLETED);
         order = transferOrderRepository.save(order);
-        boolean planningCompleted = completePlanningIfDelivered(order.getPlanning());
+        planningCompletionService.tryComplete(order.getPlanning() == null ? null : order.getPlanning().getId());
 
         log.info("Transfer completed [no={}, item={}, qty={}, to={}]",
                 order.getTransferNo(), item.getCode(), transferQty, toWh.getCode());
         publishTransferEvent(order, NotificationType.TRANSFER_COMPLETED,
                 "Transfer completed", " arrived at " + toWh.getCode() + ".");
-        if (planningCompleted) {
-            Planning planning = order.getPlanning();
-            notificationEventPublisher.publish(NotificationType.PLANNING_COMPLETED,
-                    "Planning completed",
-                    planning.getPlanningNo() + " and its workshop request are complete.",
-                    "Planning", planning.getId(), planningRequester(planning),
-                    Set.of(com.restapi.wmsservice.security.PermissionCode.PLANNING_READ));
-        }
 
         return transferOrderMapper.toResponse(order);
     }
@@ -544,33 +541,6 @@ public class TransferOrderServiceImpl implements TransferOrderService {
         reservationRepository.save(reservation);
     }
 
-    private boolean completePlanningIfDelivered(Planning planning) {
-        if (planning == null) {
-            return false;
-        }
-        Planning lockedPlanning = planningRepository.findByIdForUpdate(planning.getId())
-                .orElseThrow(() -> new AppException(ErrorCode.PLANNING_NOT_FOUND));
-        if (lockedPlanning.getStatus() != PlanningStatus.EXECUTING) {
-            return false;
-        }
-        Map<Long, Integer> deliveredByItem = transferOrderRepository.findByPlanningId(planning.getId()).stream()
-                .filter(transfer -> transfer.getStatus() == TransferStatus.COMPLETED)
-                .collect(Collectors.groupingBy(
-                        transfer -> transfer.getItem().getId(),
-                        Collectors.summingInt(TransferOrder::getQuantity)));
-        boolean delivered = lockedPlanning.getDetails().stream()
-                .filter(detail -> detail.getItem().getItemType() == ItemType.SET)
-                .allMatch(detail -> deliveredByItem.getOrDefault(detail.getItem().getId(), 0)
-                        >= detail.getRequiredQuantity());
-        if (delivered) {
-            lockedPlanning.setStatus(PlanningStatus.COMPLETED);
-            lockedPlanning.getWorkshopRequest().setStatus(RequestStatus.COMPLETED);
-            planningRepository.save(lockedPlanning);
-            return true;
-        }
-        return false;
-    }
-
     private void publishTransferEvent(TransferOrder order, NotificationType type,
                                       String title, String messageSuffix) {
         notificationEventPublisher.publish(type, title, order.getTransferNo() + messageSuffix,
@@ -593,6 +563,9 @@ public class TransferOrderServiceImpl implements TransferOrderService {
     private Inventory creditInventory(Item item, Warehouse warehouse, Location location, int quantity) {
         if (location == null || !location.getWarehouse().getId().equals(warehouse.getId())) {
             throw new AppException(ErrorCode.LOCATION_NOT_FOUND);
+        }
+        if (location.getStatus() == LocationStatus.MAINTENANCE) {
+            throw new AppException(ErrorCode.LOCATION_NOT_OPERATIONAL);
         }
         Inventory inventory = inventoryRepository
                 .findByItemIdAndWarehouseIdAndLocationId(item.getId(), warehouse.getId(), location.getId())
@@ -621,7 +594,10 @@ public class TransferOrderServiceImpl implements TransferOrderService {
      */
     private Location getFirstLocation(Long warehouseId) {
         List<Location> locations = locationRepository.findByWarehouseId(warehouseId);
-        return locations.isEmpty() ? null : locations.get(0);
+        return locations.stream()
+                .filter(location -> location.getStatus() != LocationStatus.MAINTENANCE)
+                .findFirst()
+                .orElse(null);
     }
 
     /** Tạo InventoryTransaction header cho TRANSFER. */
@@ -641,6 +617,7 @@ public class TransferOrderServiceImpl implements TransferOrderService {
         txn.setToWarehouse(toWh);
         txn.setReferenceType("TransferOrder");
         txn.setReferenceId(transferOrderId);
+        txn.setCreatedBy(currentActorProvider.getActor());
         return txn;
     }
 

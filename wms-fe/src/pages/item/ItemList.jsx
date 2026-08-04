@@ -6,8 +6,12 @@ import Button from '../../components/Button';
 import Modal from '../../components/Modal';
 import itemService from '../../services/itemService';
 import ItemForm from './ItemForm';
+import { useAuth } from '../../auth/useAuth';
+import { PERMISSIONS as P } from '../../auth/permissions';
 
 const ItemList = () => {
+  const { hasPermission } = useAuth();
+  const canManage = hasPermission(P.MASTER_DATA_MANAGE);
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -129,10 +133,10 @@ const ItemList = () => {
     <div className="animate-fade-in">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
         <h1 style={{ fontSize: '24px', fontWeight: 600 }}>Item Management</h1>
-        <Button variant="primary" onClick={handleAdd}>
+        {canManage && <Button variant="primary" onClick={handleAdd}>
           <Plus size={18} />
           Add Item
-        </Button>
+        </Button>}
       </div>
 
       <div style={{ backgroundColor: 'var(--bg-paper)', padding: '20px', borderRadius: 'var(--radius-lg)', boxShadow: 'var(--shadow-sm)' }}>
@@ -145,8 +149,8 @@ const ItemList = () => {
           <Table 
             columns={columns} 
             data={data} 
-            onEdit={handleEdit}
-            onDelete={handleDelete}
+            onEdit={canManage ? handleEdit : undefined}
+            onDelete={canManage ? handleDelete : undefined}
           />
         )}
       </div>

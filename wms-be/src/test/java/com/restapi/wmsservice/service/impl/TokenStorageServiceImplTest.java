@@ -80,4 +80,26 @@ class TokenStorageServiceImplTest {
                 .hasMessage("Redis did not persist the refresh token family");
         verify(stringRedisTemplate, never()).opsForValue();
     }
+
+    @Test
+    void rotateRefreshToken_comparesAndReplacesFamilyTokenAtomically() {
+        when(stringRedisTemplate.execute(any(RedisScript.class), anyList(), any(Object[].class)))
+                .thenReturn(1L);
+
+        boolean rotated = tokenStorageService.rotateRefreshToken(
+                "family-id", "test-user", "old-refresh-token", "new-refresh-token");
+
+        assertThat(rotated).isTrue();
+        ArgumentCaptor<RedisScript> scriptCaptor = ArgumentCaptor.forClass(RedisScript.class);
+        ArgumentCaptor<List<String>> keysCaptor = ArgumentCaptor.forClass(List.class);
+        ArgumentCaptor<Object[]> argsCaptor = ArgumentCaptor.forClass(Object[].class);
+        verify(stringRedisTemplate).execute(scriptCaptor.capture(), keysCaptor.capture(), argsCaptor.capture());
+        assertThat(keysCaptor.getValue())
+                .containsExactly("rt_family:family-id", "rt:new-refresh-token");
+        assertThat(argsCaptor.getValue()).containsExactly(
+                "old-refresh-token", "new-refresh-token", "family-id:test-user",
+                String.valueOf(REFRESHABLE_DURATION));
+        assertThat(scriptCaptor.getValue().getScriptAsString())
+                .contains("current ~= ARGV[1]", "redis.call('SET', KEYS[1]", "redis.call('SET', KEYS[2]");
+    }
 }

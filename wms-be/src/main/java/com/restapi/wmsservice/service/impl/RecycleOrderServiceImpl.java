@@ -8,6 +8,7 @@ import com.restapi.wmsservice.entity.RecycleOrder;
 import com.restapi.wmsservice.entity.Bom;
 import com.restapi.wmsservice.enums.RecycleStatus;
 import com.restapi.wmsservice.enums.ItemType;
+import com.restapi.wmsservice.enums.ItemStatus;
 import com.restapi.wmsservice.enums.NotificationType;
 import com.restapi.wmsservice.exception.AppException;
 import com.restapi.wmsservice.exception.ErrorCode;
@@ -17,6 +18,8 @@ import com.restapi.wmsservice.repository.BomRepository;
 import com.restapi.wmsservice.repository.PlanningDetailRepository;
 import com.restapi.wmsservice.repository.RecycleOrderRepository;
 import com.restapi.wmsservice.service.RecycleOrderService;
+import com.restapi.wmsservice.service.InventoryOperationsService;
+import com.restapi.wmsservice.service.PlanningCompletionService;
 import com.restapi.wmsservice.service.NotificationEventPublisher;
 import lombok.AccessLevel;
 import lombok.RequiredArgsConstructor;
@@ -41,6 +44,8 @@ public class RecycleOrderServiceImpl implements RecycleOrderService {
     ItemRepository itemRepository;
     BomRepository bomRepository;
     RecycleOrderMapper recycleOrderMapper;
+    InventoryOperationsService inventoryOperationsService;
+    PlanningCompletionService planningCompletionService;
     NotificationEventPublisher notificationEventPublisher;
 
     @Override
@@ -60,7 +65,10 @@ public class RecycleOrderServiceImpl implements RecycleOrderService {
         if (fromItem.getItemType() != ItemType.RAW_COMPONENT || toItem.getItemType() != ItemType.FINISHED_COMPONENT) {
             throw new AppException(ErrorCode.INVALID_ITEM_TYPE);
         }
-        validateConversionBom(fromItem, toItem);
+        if (fromItem.getStatus() != ItemStatus.ACTIVE || toItem.getStatus() != ItemStatus.ACTIVE) {
+            throw new AppException(ErrorCode.ITEM_NOT_ACTIVE);
+        }
+        Bom conversion = validateConversionBom(fromItem, toItem);
         validatePlanningItem(planningDetail, toItem);
         Integer expectedYield = validatePlannedQuantity(planningDetail, request, fromItem, toItem, null);
 
@@ -73,9 +81,13 @@ public class RecycleOrderServiceImpl implements RecycleOrderService {
         order.setFromItem(fromItem);
         order.setToItem(toItem);
         order.setExpectedYield(expectedYield);
+        order.setConversionRatio(conversion.getQuantity());
         order.setStatus(RecycleStatus.PENDING);
-
-        return recycleOrderMapper.toResponse(recycleOrderRepository.save(order));
+        order = recycleOrderRepository.save(order);
+        if (planningDetail != null) {
+            inventoryOperationsService.reserveRecycleInput(order.getId());
+        }
+        return recycleOrderMapper.toResponse(order);
     }
 
     @Override
@@ -119,17 +131,25 @@ public class RecycleOrderServiceImpl implements RecycleOrderService {
         if (fromItem.getItemType() != ItemType.RAW_COMPONENT || toItem.getItemType() != ItemType.FINISHED_COMPONENT) {
             throw new AppException(ErrorCode.INVALID_ITEM_TYPE);
         }
-        validateConversionBom(fromItem, toItem);
+        if (fromItem.getStatus() != ItemStatus.ACTIVE || toItem.getStatus() != ItemStatus.ACTIVE) {
+            throw new AppException(ErrorCode.ITEM_NOT_ACTIVE);
+        }
+        Bom conversion = validateConversionBom(fromItem, toItem);
         validatePlanningItem(planningDetail, toItem);
         Integer expectedYield = validatePlannedQuantity(planningDetail, request, fromItem, toItem, id);
 
+        inventoryOperationsService.releaseRecycleInput(order.getId());
         recycleOrderMapper.updateEntity(order, request);
         order.setPlanningDetail(planningDetail);
         order.setFromItem(fromItem);
         order.setToItem(toItem);
         order.setExpectedYield(expectedYield);
-
-        return recycleOrderMapper.toResponse(recycleOrderRepository.save(order));
+        order.setConversionRatio(conversion.getQuantity());
+        order = recycleOrderRepository.save(order);
+        if (planningDetail != null) {
+            inventoryOperationsService.reserveRecycleInput(order.getId());
+        }
+        return recycleOrderMapper.toResponse(order);
     }
 
     @Override
@@ -140,6 +160,7 @@ public class RecycleOrderServiceImpl implements RecycleOrderService {
         if (order.getStatus() != RecycleStatus.PENDING) {
             throw new AppException(ErrorCode.RECYCLE_ORDER_INVALID_STATUS);
         }
+        inventoryOperationsService.releaseRecycleInput(id);
         recycleOrderRepository.deleteById(id);
     }
 
@@ -154,6 +175,8 @@ public class RecycleOrderServiceImpl implements RecycleOrderService {
         if (order.getStatus() != RecycleStatus.PENDING) {
             throw new AppException(ErrorCode.RECYCLE_ORDER_INVALID_STATUS);
         }
+
+        inventoryOperationsService.reserveRecycleInput(id);
 
         order.setStatus(RecycleStatus.IN_PROGRESS);
         order.setStartTime(LocalDateTime.now());
@@ -174,12 +197,14 @@ public class RecycleOrderServiceImpl implements RecycleOrderService {
             throw new AppException(ErrorCode.RECYCLE_ORDER_INVALID_STATUS);
         }
 
+        inventoryOperationsService.releaseRecycleInput(id);
         order.setStatus(RecycleStatus.FAILED);
         order.setFinishTime(LocalDateTime.now());
         order = recycleOrderRepository.save(order);
         log.info("Recycle cancelled [orderId={}, no={}]", order.getId(), order.getOrderNo());
         publishRecycleEvent(order, NotificationType.RECYCLE_FAILED,
                 "Recycle stopped", " was stopped.");
+        tryCompletePlanning(order.getPlanningDetail());
         return recycleOrderMapper.toResponse(order);
     }
 
@@ -199,10 +224,15 @@ public class RecycleOrderServiceImpl implements RecycleOrderService {
         return username == null || username.isBlank() ? Set.of() : Set.of(username);
     }
 
-    private void validateConversionBom(Item fromItem, Item toItem) {
-        if (!bomRepository.existsByParentItemIdAndChildItemId(fromItem.getId(), toItem.getId())) {
-            throw new AppException(ErrorCode.BOM_NOT_FOUND);
+    private void tryCompletePlanning(PlanningDetail detail) {
+        if (detail != null && detail.getPlanning() != null) {
+            planningCompletionService.tryComplete(detail.getPlanning().getId());
         }
+    }
+
+    private Bom validateConversionBom(Item fromItem, Item toItem) {
+        return bomRepository.findByParentItemIdAndChildItemId(fromItem.getId(), toItem.getId())
+                .orElseThrow(() -> new AppException(ErrorCode.BOM_NOT_FOUND));
     }
 
     private void validatePlanningItem(PlanningDetail planningDetail, Item item) {
@@ -223,8 +253,15 @@ public class RecycleOrderServiceImpl implements RecycleOrderService {
                                             Item fromItem,
                                             Item toItem,
                                             Long excludedOrderId) {
+        long maximumYield = (long) request.getQuantity()
+                * bomRepository.findByParentItemIdAndChildItemId(fromItem.getId(), toItem.getId())
+                .orElseThrow(() -> new AppException(ErrorCode.BOM_NOT_FOUND))
+                .getQuantity();
+        if (maximumYield <= 0 || maximumYield > Integer.MAX_VALUE) {
+            throw new AppException(ErrorCode.PLANNING_QUANTITY_OVERFLOW);
+        }
         if (planningDetail == null) {
-            return null;
+            return (int) maximumYield;
         }
         if (planningDetail.getPlanning().getStatus()
                 != com.restapi.wmsservice.enums.PlanningStatus.EXECUTING) {
@@ -243,10 +280,11 @@ public class RecycleOrderServiceImpl implements RecycleOrderService {
         if (remainingYield <= 0) {
             throw new AppException(ErrorCode.PLANNING_ORDER_QUANTITY_EXCEEDED);
         }
-        long maximumYield = (long) request.getQuantity() * conversion.getQuantity();
-        if (maximumYield <= 0) {
-            throw new AppException(ErrorCode.INVALID_QUANTITY);
+        int requiredInput = (int) (((long) remainingYield + conversion.getQuantity() - 1)
+                / conversion.getQuantity());
+        if (request.getQuantity() > requiredInput) {
+            throw new AppException(ErrorCode.PLANNING_ORDER_QUANTITY_EXCEEDED);
         }
-        return (int) Math.min(remainingYield, maximumYield);
+        return (int) maximumYield;
     }
 }

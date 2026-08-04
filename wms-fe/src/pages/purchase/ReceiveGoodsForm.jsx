@@ -9,7 +9,9 @@ const ReceiveGoodsForm = ({ request, warehouses, locations, onSubmit, onCancel }
   const detail = outstanding.find((item) => item.id === Number(form.purchaseDetailId));
   const remaining = detail ? detail.quantity - detail.receivedQuantity : 0;
   const componentWarehouses = warehouses.filter((warehouse) => warehouse.type === 'COMPONENT_WAREHOUSE' && warehouse.status === 'ACTIVE');
-  const availableLocations = useMemo(() => locations.filter((location) => location.warehouseId === Number(form.warehouseId)), [locations, form.warehouseId]);
+  const availableLocations = useMemo(() => locations.filter((location) =>
+    location.warehouseId === Number(form.warehouseId) && location.status !== 'MAINTENANCE'
+  ), [locations, form.warehouseId]);
   const setField = (field, value) => setForm((current) => ({ ...current, [field]: value, ...(field === 'warehouseId' ? { locationId: '' } : {}) }));
 
   const submit = (event) => {

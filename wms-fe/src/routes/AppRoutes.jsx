@@ -39,10 +39,10 @@ const AppRoutes = () => {
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<Dashboard />} />
         <Route path="users" element={<PermissionRoute permissions={[P.SECURITY_MANAGE]}><UserList /></PermissionRoute>} />
-        <Route path="warehouse" element={<PermissionRoute permissions={[P.MASTER_DATA_MANAGE]}><WarehouseList /></PermissionRoute>} />
-        <Route path="location" element={<PermissionRoute permissions={[P.MASTER_DATA_MANAGE]}><LocationList /></PermissionRoute>} />
-        <Route path="item" element={<PermissionRoute permissions={[P.MASTER_DATA_MANAGE]}><ItemList /></PermissionRoute>} />
-        <Route path="bom" element={<PermissionRoute permissions={[P.MASTER_DATA_MANAGE]}><BomList /></PermissionRoute>} />
+        <Route path="warehouse" element={<PermissionRoute permissions={[P.MASTER_DATA_READ, P.MASTER_DATA_MANAGE]}><WarehouseList /></PermissionRoute>} />
+        <Route path="location" element={<PermissionRoute permissions={[P.MASTER_DATA_READ, P.MASTER_DATA_MANAGE]}><LocationList /></PermissionRoute>} />
+        <Route path="item" element={<PermissionRoute permissions={[P.MASTER_DATA_READ, P.MASTER_DATA_MANAGE]}><ItemList /></PermissionRoute>} />
+        <Route path="bom" element={<PermissionRoute permissions={[P.MASTER_DATA_READ, P.MASTER_DATA_MANAGE]}><BomList /></PermissionRoute>} />
         <Route path="inventory" element={<PermissionRoute permissions={[P.INVENTORY_READ]}><InventoryList /></PermissionRoute>} />
         <Route path="workshop" element={<PermissionRoute permissions={[P.WORKSHOP_REQUEST_READ_OWN, P.WORKSHOP_REQUEST_READ_ALL]}><WorkshopList /></PermissionRoute>} />
         <Route path="planning" element={<PermissionRoute permissions={[P.PLANNING_READ]}><PlanningList /></PermissionRoute>} />

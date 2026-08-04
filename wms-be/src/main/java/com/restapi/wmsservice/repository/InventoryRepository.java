@@ -48,14 +48,20 @@ public interface InventoryRepository extends JpaRepository<Inventory, Long> {
      * Lấy tất cả inventory records của một item (dùng trong Planning để update reserved).
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
-    List<Inventory> findByItemId(Long itemId);
+    @Query("SELECT i FROM Inventory i WHERE i.item.id = :itemId " +
+           "ORDER BY i.warehouse.id, i.location.id, i.id")
+    List<Inventory> findByItemId(@Param("itemId") Long itemId);
 
     /**
      * Tìm inventory của item trên warehouse cụ thể (tất cả locations trong warehouse đó).
      * Dùng trong Reserve/Deduct để chọn đúng warehouse.
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
-    List<Inventory> findByItemIdAndWarehouseId(Long itemId, Long warehouseId);
+    @Query("SELECT i FROM Inventory i WHERE i.item.id = :itemId AND i.warehouse.id = :warehouseId " +
+           "ORDER BY i.location.id, i.id")
+    List<Inventory> findByItemIdAndWarehouseId(
+            @Param("itemId") Long itemId,
+            @Param("warehouseId") Long warehouseId);
 
     /**
      * Tìm inventory theo item + warehouse + location (unique key).

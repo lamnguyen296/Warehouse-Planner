@@ -1,5 +1,4 @@
 import { Client } from '@stomp/stompjs';
-import { getAccessToken } from '../auth/session';
 
 const apiBaseUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8081/wms').replace(/\/$/, '');
 const brokerUrl = `${apiBaseUrl.replace(/^http/, 'ws')}/ws`;
@@ -9,6 +8,7 @@ export const createNotificationSocket = ({
   onDisconnected,
   onNotification,
   onError,
+  csrfToken,
 }) => {
   const client = new Client({
     brokerURL: brokerUrl,
@@ -16,12 +16,10 @@ export const createNotificationSocket = ({
     heartbeatIncoming: 10_000,
     heartbeatOutgoing: 10_000,
     debug: () => {},
+    connectHeaders: csrfToken?.headerName && csrfToken?.token
+      ? { [csrfToken.headerName]: csrfToken.token }
+      : {},
   });
-
-  client.beforeConnect = () => {
-    const token = getAccessToken();
-    client.connectHeaders = token ? { Authorization: `Bearer ${token}` } : {};
-  };
 
   client.onConnect = () => {
     onConnected();
@@ -34,7 +32,12 @@ export const createNotificationSocket = ({
     });
   };
   client.onDisconnect = onDisconnected;
-  client.onWebSocketClose = onDisconnected;
+  client.onWebSocketClose = (event) => {
+    onDisconnected();
+    if (client.active && event.code !== 1000) {
+      onError(new Error(`WebSocket closed with code ${event.code}`));
+    }
+  };
   client.onStompError = (frame) => onError(new Error(frame.headers.message || 'WebSocket error'));
   client.onWebSocketError = onError;
 

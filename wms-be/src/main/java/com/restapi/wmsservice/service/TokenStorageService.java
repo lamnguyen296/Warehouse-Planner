@@ -9,6 +9,8 @@ import lombok.extern.slf4j.Slf4j;
 
 public interface TokenStorageService {
     void saveRefreshToken(String familyId, String username, String refreshToken);
+    boolean rotateRefreshToken(String familyId, String username,
+                               String currentRefreshToken, String newRefreshToken);
     void blacklistAccessToken(String jit, long remainingTimeMs);
     boolean isAccessTokenBlacklisted(String jit);
     void invalidateRefreshTokenFamily(String familyId);

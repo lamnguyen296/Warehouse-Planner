@@ -38,10 +38,18 @@ spring:
 
 jwt:
   signerKey: ${JWT_SIGNER_KEY}
-  valid-duration: ${JWT_VALID_DURATION:86400}
+  valid-duration: ${JWT_VALID_DURATION:900}
   refreshable-duration: ${JWT_REFRESHABLE_DURATION:259200}
 
 app:
+  frontend-origin: ${FRONTEND_ORIGIN:http://localhost:5173}
+  auth-cookie:
+    access-name: ${AUTH_ACCESS_COOKIE_NAME:wms_access_token}
+    refresh-name: ${AUTH_REFRESH_COOKIE_NAME:wms_refresh_token}
+    access-path: ${AUTH_ACCESS_COOKIE_PATH:/wms}
+    refresh-path: ${AUTH_REFRESH_COOKIE_PATH:/wms/auth}
+    secure: ${AUTH_COOKIE_SECURE:false}
+    same-site: ${AUTH_COOKIE_SAME_SITE:Lax}
   bootstrap-admin:
     password: ${ADMIN_PASSWORD:}
 

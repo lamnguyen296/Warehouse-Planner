@@ -12,7 +12,8 @@ const InventoryForm = ({ initialData, warehouses, locations, items, onSubmit, on
   });
 
   const availableLocations = useMemo(() => locations.filter((location) =>
-    !form.warehouseId || location.warehouseId === Number(form.warehouseId)
+    (!form.warehouseId || location.warehouseId === Number(form.warehouseId))
+      && location.status !== 'MAINTENANCE'
   ), [locations, form.warehouseId]);
 
   const setField = (field, value) => setForm((current) => ({

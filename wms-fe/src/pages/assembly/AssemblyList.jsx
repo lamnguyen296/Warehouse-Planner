@@ -29,6 +29,7 @@ const AssemblyList = () => {
   const columns = [
     { header: 'Order', accessor: 'assemblyNo', render: (row) => <div><strong>{row.assemblyNo}</strong><div className="subtle">{row.planningDetailId ? `Plan detail #${row.planningDetailId}` : 'Manual'}</div></div> },
     { header: 'SET', accessor: 'setItem', render: (row) => `${row.setItem?.code} - ${row.setItem?.name}` }, { header: 'Quantity', accessor: 'quantity' },
+    { header: 'Component snapshot', accessor: 'components', render: (row) => row.components?.map((component) => `${component.itemCode} x ${component.requiredQuantity}`).join(', ') || 'N/A' },
     { header: 'Status', accessor: 'status', render: (row) => <StatusBadge value={row.status} /> }, { header: 'Next action', accessor: 'actions', render: actions },
   ];
   return <div><PageHeader title="Assembly Orders" subtitle="Consume reserved leaf components and produce SET inventory" actions={canExecute && <Button onClick={() => setCreateOpen(true)}><Plus size={16} /> Manual assembly</Button>} /><div className="surface"><Table columns={columns} data={data} /></div>

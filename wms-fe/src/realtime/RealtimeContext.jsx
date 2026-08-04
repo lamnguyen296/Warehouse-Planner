@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../auth/useAuth';
+import authService from '../services/authService';
 import notificationService from '../services/notificationService';
 import { createNotificationSocket } from '../services/websocketService';
 import RealtimeContext from './realtime-context';
@@ -15,11 +16,29 @@ export const RealtimeProvider = ({ children }) => {
   useEffect(() => {
     let active = true;
     let client;
+    let recoveringSession = false;
+
+    const recoverSocketSession = async () => {
+      if (!active || recoveringSession) return;
+      recoveringSession = true;
+      try {
+        await authService.myInfo();
+        const csrfToken = await authService.csrf();
+        if (client && csrfToken?.headerName && csrfToken?.token) {
+          client.connectHeaders = { [csrfToken.headerName]: csrfToken.token };
+        }
+      } catch {
+        // The HTTP auth flow emits the session-expired event on a terminal 401.
+      } finally {
+        recoveringSession = false;
+      }
+    };
 
     const initialize = async () => {
       if (!ready || !authenticated) return;
 
       try {
+        const csrfToken = await authService.csrf();
         const [storedNotifications, count] = await Promise.all([
           notificationService.getAll(),
           notificationService.getUnreadCount(),
@@ -28,23 +47,28 @@ export const RealtimeProvider = ({ children }) => {
         knownEventIds.current = new Set(storedNotifications.map((notification) => notification.eventId));
         setNotifications(storedNotifications);
         setUnreadCount(count.count);
-      } catch {
-        if (!active) return;
-      }
 
-      client = createNotificationSocket({
-        onConnected: () => active && setConnected(true),
-        onDisconnected: () => active && setConnected(false),
-        onNotification: (notification) => {
-          if (!active || knownEventIds.current.has(notification.eventId)) return;
-          knownEventIds.current.add(notification.eventId);
-          setNotifications((current) => [notification, ...current].slice(0, 50));
-          if (!notification.readAt) setUnreadCount((current) => current + 1);
-          toast.success(notification.message, { id: notification.eventId });
-        },
-        onError: () => active && setConnected(false),
-      });
-      client.activate();
+        client = createNotificationSocket({
+          onConnected: () => active && setConnected(true),
+          onDisconnected: () => active && setConnected(false),
+          onNotification: (notification) => {
+            if (!active || knownEventIds.current.has(notification.eventId)) return;
+            knownEventIds.current.add(notification.eventId);
+            setNotifications((current) => [notification, ...current].slice(0, 50));
+            if (!notification.readAt) setUnreadCount((current) => current + 1);
+            toast.success(notification.message, { id: notification.eventId });
+          },
+          onError: () => {
+            if (!active) return;
+            setConnected(false);
+            recoverSocketSession();
+          },
+          csrfToken,
+        });
+        client.activate();
+      } catch {
+        if (active) setConnected(false);
+      }
     };
 
     initialize();

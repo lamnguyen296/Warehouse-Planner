@@ -36,6 +36,10 @@ public interface InventoryOperationsService {
      */
     List<InventoryReservationResponse> reserveInventory(Long planningDetailId, Long warehouseId, int quantity);
 
+    void reserveRecycleInput(Long recycleOrderId);
+
+    void releaseRecycleInput(Long recycleOrderId);
+
     /**
      * Release reservation – hoàn trả lại availableQuantity.
      *

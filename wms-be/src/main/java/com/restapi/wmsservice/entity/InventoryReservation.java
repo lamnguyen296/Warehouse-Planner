@@ -23,8 +23,12 @@ public class InventoryReservation extends BaseEntity {
     Long id;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "planning_detail_id", nullable = false)
+    @JoinColumn(name = "planning_detail_id")
     PlanningDetail planningDetail;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "recycle_order_id")
+    RecycleOrder recycleOrder;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "item_id", nullable = false)

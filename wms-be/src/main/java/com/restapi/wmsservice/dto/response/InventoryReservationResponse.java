@@ -14,6 +14,7 @@ import java.time.LocalDateTime;
 public class InventoryReservationResponse {
     Long id;
     Long planningDetailId;
+    Long recycleOrderId;
     Long itemId;
     String itemCode;
     Long warehouseId;

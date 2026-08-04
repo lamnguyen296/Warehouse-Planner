@@ -11,12 +11,14 @@ import org.mapstruct.MappingTarget;
 public interface InventoryReservationMapper {
 
     @Mapping(target = "planningDetail", ignore = true)
+    @Mapping(target = "recycleOrder", ignore = true)
     @Mapping(target = "item", ignore = true)
     @Mapping(target = "warehouse", ignore = true)
     @Mapping(target = "inventory", ignore = true)
     InventoryReservation toReservation(InventoryReservationRequest request);
 
     @Mapping(source = "planningDetail.id", target = "planningDetailId")
+    @Mapping(source = "recycleOrder.id", target = "recycleOrderId")
     @Mapping(source = "item.id", target = "itemId")
     @Mapping(source = "item.code", target = "itemCode")
     @Mapping(source = "warehouse.id", target = "warehouseId")
@@ -24,6 +26,7 @@ public interface InventoryReservationMapper {
     InventoryReservationResponse toResponse(InventoryReservation reservation);
 
     @Mapping(target = "planningDetail", ignore = true)
+    @Mapping(target = "recycleOrder", ignore = true)
     @Mapping(target = "item", ignore = true)
     @Mapping(target = "warehouse", ignore = true)
     @Mapping(target = "inventory", ignore = true)

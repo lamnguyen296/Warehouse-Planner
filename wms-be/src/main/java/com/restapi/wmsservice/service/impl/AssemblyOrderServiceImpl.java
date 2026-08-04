@@ -3,10 +3,12 @@ package com.restapi.wmsservice.service.impl;
 import com.restapi.wmsservice.dto.request.AssemblyOrderRequest;
 import com.restapi.wmsservice.dto.response.AssemblyOrderResponse;
 import com.restapi.wmsservice.entity.AssemblyOrder;
+import com.restapi.wmsservice.entity.AssemblyOrderComponent;
 import com.restapi.wmsservice.entity.Item;
 import com.restapi.wmsservice.entity.PlanningDetail;
 import com.restapi.wmsservice.enums.AssemblyStatus;
 import com.restapi.wmsservice.enums.ItemType;
+import com.restapi.wmsservice.enums.ItemStatus;
 import com.restapi.wmsservice.enums.NotificationType;
 import com.restapi.wmsservice.exception.AppException;
 import com.restapi.wmsservice.exception.ErrorCode;
@@ -15,6 +17,8 @@ import com.restapi.wmsservice.repository.AssemblyOrderRepository;
 import com.restapi.wmsservice.repository.ItemRepository;
 import com.restapi.wmsservice.repository.PlanningDetailRepository;
 import com.restapi.wmsservice.service.AssemblyOrderService;
+import com.restapi.wmsservice.service.BomExplosionService;
+import com.restapi.wmsservice.service.PlanningCompletionService;
 import com.restapi.wmsservice.service.NotificationEventPublisher;
 import lombok.AccessLevel;
 import lombok.RequiredArgsConstructor;
@@ -37,6 +41,8 @@ public class AssemblyOrderServiceImpl implements AssemblyOrderService {
     PlanningDetailRepository planningDetailRepository;
     ItemRepository itemRepository;
     AssemblyOrderMapper assemblyOrderMapper;
+    BomExplosionService bomExplosionService;
+    PlanningCompletionService planningCompletionService;
     NotificationEventPublisher notificationEventPublisher;
 
     @Override
@@ -50,7 +56,7 @@ public class AssemblyOrderServiceImpl implements AssemblyOrderService {
 
         Item setItem = itemRepository.findById(request.getSetItemId())
                 .orElseThrow(() -> new AppException(ErrorCode.ITEM_NOT_FOUND));
-        if (setItem.getItemType() != ItemType.SET) {
+        if (setItem.getItemType() != ItemType.SET || setItem.getStatus() != ItemStatus.ACTIVE) {
             throw new AppException(ErrorCode.INVALID_ITEM_TYPE);
         }
         validatePlanningItem(planningDetail, setItem);
@@ -64,6 +70,7 @@ public class AssemblyOrderServiceImpl implements AssemblyOrderService {
         order.setPlanningDetail(planningDetail);
         order.setSetItem(setItem);
         order.setStatus(AssemblyStatus.PENDING);
+        refreshComponentSnapshot(order);
 
         return assemblyOrderMapper.toResponse(assemblyOrderRepository.save(order));
     }
@@ -103,7 +110,7 @@ public class AssemblyOrderServiceImpl implements AssemblyOrderService {
 
         Item setItem = itemRepository.findById(request.getSetItemId())
                 .orElseThrow(() -> new AppException(ErrorCode.ITEM_NOT_FOUND));
-        if (setItem.getItemType() != ItemType.SET) {
+        if (setItem.getItemType() != ItemType.SET || setItem.getStatus() != ItemStatus.ACTIVE) {
             throw new AppException(ErrorCode.INVALID_ITEM_TYPE);
         }
         validatePlanningItem(planningDetail, setItem);
@@ -112,6 +119,7 @@ public class AssemblyOrderServiceImpl implements AssemblyOrderService {
         assemblyOrderMapper.updateEntity(order, request);
         order.setPlanningDetail(planningDetail);
         order.setSetItem(setItem);
+        refreshComponentSnapshot(order);
 
         return assemblyOrderMapper.toResponse(assemblyOrderRepository.save(order));
     }
@@ -162,6 +170,7 @@ public class AssemblyOrderServiceImpl implements AssemblyOrderService {
         log.info("Assembly cancelled [orderId={}, no={}]", order.getId(), order.getAssemblyNo());
         publishAssemblyEvent(order, NotificationType.ASSEMBLY_FAILED,
                 "Assembly stopped", " was stopped.");
+        tryCompletePlanning(order.getPlanningDetail());
         return assemblyOrderMapper.toResponse(order);
     }
 
@@ -179,6 +188,12 @@ public class AssemblyOrderServiceImpl implements AssemblyOrderService {
         }
         String username = detail.getPlanning().getWorkshopRequest().getCreatedBy();
         return username == null || username.isBlank() ? Set.of() : Set.of(username);
+    }
+
+    private void tryCompletePlanning(PlanningDetail detail) {
+        if (detail != null && detail.getPlanning() != null) {
+            planningCompletionService.tryComplete(detail.getPlanning().getId());
+        }
     }
 
     private void validatePlanningItem(PlanningDetail planningDetail, Item item) {
@@ -213,6 +228,25 @@ public class AssemblyOrderServiceImpl implements AssemblyOrderService {
                 - Math.min(planningDetail.getRequiredQuantity(), planningDetail.getAvailableQuantity());
         if ((long) committedQuantity + quantity > assemblyRequired) {
             throw new AppException(ErrorCode.PLANNING_ORDER_QUANTITY_EXCEEDED);
+        }
+    }
+
+    private void refreshComponentSnapshot(AssemblyOrder order) {
+        List<BomExplosionService.ComponentRequirement> requirements =
+                bomExplosionService.explodeLeafComponents(order.getSetItem(), order.getQuantity());
+        if (requirements.isEmpty()
+                || (requirements.size() == 1
+                && requirements.get(0).item().getId().equals(order.getSetItem().getId()))) {
+            throw new AppException(ErrorCode.PLANNING_ENGINE_NO_BOM);
+        }
+
+        order.getComponents().clear();
+        for (BomExplosionService.ComponentRequirement requirement : requirements) {
+            AssemblyOrderComponent component = new AssemblyOrderComponent();
+            component.setAssemblyOrder(order);
+            component.setItem(requirement.item());
+            component.setRequiredQuantity(requirement.quantity());
+            order.getComponents().add(component);
         }
     }
 }

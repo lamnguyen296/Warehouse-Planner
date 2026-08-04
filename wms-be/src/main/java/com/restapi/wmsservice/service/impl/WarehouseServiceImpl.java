@@ -60,6 +60,10 @@ public class WarehouseServiceImpl implements WarehouseService {
     public WarehouseResponse update(Long id, WarehouseRequest request) {
         Warehouse warehouse = warehouseRepository.findById(id)
                 .orElseThrow(() -> new AppException(ErrorCode.WAREHOUSE_NOT_FOUND));
+
+        if (warehouse.getType() != request.getType()) {
+            throw new AppException(ErrorCode.MASTER_DATA_IDENTITY_IMMUTABLE);
+        }
         
         if (!warehouse.getCode().equals(request.getCode()) && warehouseRepository.existsByCode(request.getCode())) {
             throw new AppException(ErrorCode.WAREHOUSE_CODE_EXISTED);

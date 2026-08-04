@@ -8,6 +8,9 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 import lombok.experimental.FieldDefaults;
 
+import java.util.ArrayList;
+import java.util.List;
+
 @Entity
 @Table(name = "assembly_order")
 @Getter
@@ -33,6 +36,9 @@ public class AssemblyOrder extends BaseEntity {
 
     @Column(nullable = false)
     Integer quantity;
+
+    @OneToMany(mappedBy = "assemblyOrder", cascade = CascadeType.ALL, orphanRemoval = true)
+    List<AssemblyOrderComponent> components = new ArrayList<>();
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)

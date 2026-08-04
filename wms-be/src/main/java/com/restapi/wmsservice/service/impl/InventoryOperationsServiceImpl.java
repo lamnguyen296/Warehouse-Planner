@@ -8,6 +8,9 @@ import com.restapi.wmsservice.exception.ErrorCode;
 import com.restapi.wmsservice.repository.*;
 import com.restapi.wmsservice.service.InventoryOperationsService;
 import com.restapi.wmsservice.service.NotificationEventPublisher;
+import com.restapi.wmsservice.service.BomExplosionService;
+import com.restapi.wmsservice.security.CurrentActorProvider;
+import com.restapi.wmsservice.service.PlanningCompletionService;
 import lombok.AccessLevel;
 import lombok.RequiredArgsConstructor;
 import lombok.experimental.FieldDefaults;
@@ -19,7 +22,6 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,11 +43,13 @@ public class InventoryOperationsServiceImpl implements InventoryOperationsServic
     RecycleOrderRepository recycleOrderRepository;
     AssemblyOrderRepository assemblyOrderRepository;
     PurchaseRequestRepository purchaseRequestRepository;
-    BomRepository bomRepository;
+    BomExplosionService bomExplosionService;
     WarehouseRepository warehouseRepository;
     LocationRepository locationRepository;
     ItemRepository itemRepository;
     NotificationEventPublisher notificationEventPublisher;
+    CurrentActorProvider currentActorProvider;
+    PlanningCompletionService planningCompletionService;
 
     // ═══════════════════════════════════════════════════════════════════════
     // 1. RESERVE INVENTORY
@@ -103,6 +107,76 @@ public class InventoryOperationsServiceImpl implements InventoryOperationsServic
         return responses;
     }
 
+    @Override
+    @Transactional
+    public void reserveRecycleInput(Long recycleOrderId) {
+        RecycleOrder order = recycleOrderRepository.findByIdForUpdate(recycleOrderId)
+                .orElseThrow(() -> new AppException(ErrorCode.RECYCLE_ORDER_NOT_FOUND));
+        if (order.getStatus() != RecycleStatus.PENDING
+                && order.getStatus() != RecycleStatus.IN_PROGRESS) {
+            throw new AppException(ErrorCode.RECYCLE_ORDER_INVALID_STATUS);
+        }
+
+        List<InventoryReservation> currentReservations = reservationRepository
+                .findByRecycleOrderAndStatusForUpdate(recycleOrderId, ReservationStatus.RESERVED);
+        int alreadyReserved = currentReservations.stream()
+                .mapToInt(InventoryReservation::getQuantity)
+                .sum();
+        int remaining = order.getQuantity() - alreadyReserved;
+        if (remaining <= 0) {
+            return;
+        }
+
+        Warehouse componentWarehouse = findActiveWarehouseByType(WarehouseType.COMPONENT_WAREHOUSE);
+        List<Inventory> candidates = findReservationCandidates(order.getFromItem(), componentWarehouse.getId());
+        int totalAvailable = candidates.stream().mapToInt(Inventory::getAvailableQuantity).sum();
+        if (totalAvailable < remaining) {
+            throw new AppException(ErrorCode.INSUFFICIENT_AVAILABLE_STOCK);
+        }
+
+        for (Inventory inventory : candidates) {
+            if (remaining <= 0) {
+                break;
+            }
+            int reserveQuantity = Math.min(remaining, inventory.getAvailableQuantity());
+            if (reserveQuantity <= 0) {
+                continue;
+            }
+            doReserveRecycleInput(order, inventory, reserveQuantity);
+            remaining -= reserveQuantity;
+        }
+    }
+
+    @Override
+    @Transactional
+    public void releaseRecycleInput(Long recycleOrderId) {
+        List<InventoryReservation> reservations = reservationRepository
+                .findByRecycleOrderAndStatusForUpdate(recycleOrderId, ReservationStatus.RESERVED);
+        for (InventoryReservation reservation : reservations) {
+            releaseReservation(reservation.getId());
+        }
+    }
+
+    private void doReserveRecycleInput(RecycleOrder order, Inventory inventory, int quantity) {
+        if (inventory.getAvailableQuantity() < quantity) {
+            throw new AppException(ErrorCode.INSUFFICIENT_AVAILABLE_STOCK);
+        }
+        inventory.setAvailableQuantity(inventory.getAvailableQuantity() - quantity);
+        inventory.setReservedQuantity(inventory.getReservedQuantity() + quantity);
+        inventoryRepository.save(inventory);
+
+        InventoryReservation reservation = new InventoryReservation();
+        reservation.setPlanningDetail(order.getPlanningDetail());
+        reservation.setRecycleOrder(order);
+        reservation.setItem(order.getFromItem());
+        reservation.setWarehouse(inventory.getWarehouse());
+        reservation.setInventory(inventory);
+        reservation.setQuantity(quantity);
+        reservation.setStatus(ReservationStatus.RESERVED);
+        reservation.setExpiredTime(null);
+        reservationRepository.save(reservation);
+    }
+
     private InventoryReservationResponse doReserve(PlanningDetail planningDetail,
                                                     Inventory inventory,
                                                     Item item,
@@ -129,7 +203,7 @@ public class InventoryOperationsServiceImpl implements InventoryOperationsServic
         reservation.setInventory(inventory);
         reservation.setQuantity(quantity);
         reservation.setStatus(ReservationStatus.RESERVED);
-        reservation.setExpiredTime(LocalDateTime.now().plusHours(24));
+        reservation.setExpiredTime(null);
         reservation = reservationRepository.save(reservation);
 
         log.info("Reserved [item={}, qty={}, warehouse={}]",
@@ -164,12 +238,14 @@ public class InventoryOperationsServiceImpl implements InventoryOperationsServic
         inventory.setAvailableQuantity(inventory.getTotalQuantity() - inventory.getReservedQuantity());
         inventoryRepository.save(inventory);
 
-        PlanningDetail planningDetail = planningDetailRepository
-                .findByIdForUpdate(reservation.getPlanningDetail().getId())
-                .orElseThrow(() -> new AppException(ErrorCode.PLANNING_DETAIL_NOT_FOUND));
-        planningDetail.setReservedQuantity(Math.max(0,
-                planningDetail.getReservedQuantity() - reservation.getQuantity()));
-        planningDetailRepository.save(planningDetail);
+        if (reservation.getRecycleOrder() == null && reservation.getPlanningDetail() != null) {
+            PlanningDetail planningDetail = planningDetailRepository
+                    .findByIdForUpdate(reservation.getPlanningDetail().getId())
+                    .orElseThrow(() -> new AppException(ErrorCode.PLANNING_DETAIL_NOT_FOUND));
+            planningDetail.setReservedQuantity(Math.max(0,
+                    planningDetail.getReservedQuantity() - reservation.getQuantity()));
+            planningDetailRepository.save(planningDetail);
+        }
 
         reservation.setStatus(ReservationStatus.RELEASED);
         reservationRepository.save(reservation);
@@ -201,17 +277,14 @@ public class InventoryOperationsServiceImpl implements InventoryOperationsServic
                 .orElseThrow(() -> new AppException(ErrorCode.RECYCLE_ORDER_NOT_FOUND));
 
         // Validate status
-        if (order.getStatus() != RecycleStatus.PENDING && order.getStatus() != RecycleStatus.IN_PROGRESS) {
+        if (order.getStatus() != RecycleStatus.IN_PROGRESS) {
             throw new AppException(ErrorCode.RECYCLE_ORDER_INVALID_STATUS);
         }
 
         Item fromItem = order.getFromItem();   // RAW_COMPONENT
         Item toItem   = order.getToItem();     // FINISHED_COMPONENT
         int  inputQty = order.getQuantity();
-        Bom conversionBom = bomRepository
-                .findByParentItemIdAndChildItemId(fromItem.getId(), toItem.getId())
-                .orElseThrow(() -> new AppException(ErrorCode.BOM_NOT_FOUND));
-        long maximumYield = (long) inputQty * conversionBom.getQuantity();
+        long maximumYield = (long) inputQty * order.getConversionRatio();
         if (actualYield < 0 || actualYield > maximumYield) {
             throw new AppException(ErrorCode.RECYCLE_YIELD_EXCEEDS_EXPECTED);
         }
@@ -223,23 +296,33 @@ public class InventoryOperationsServiceImpl implements InventoryOperationsServic
         Warehouse componentWarehouse = findActiveWarehouseByType(WarehouseType.COMPONENT_WAREHOUSE);
 
         // ── DEBIT: trừ RAW từ COMPONENT_WAREHOUSE ────────────────────────
-        List<Inventory> fromInventories = inventoryRepository.findByItemIdAndWarehouseId(fromItem.getId(), componentWarehouse.getId());
-        int totalFromAvailable = fromInventories.stream().mapToInt(Inventory::getAvailableQuantity).sum();
-        if (totalFromAvailable < inputQty) {
+        reserveRecycleInput(recycleOrderId);
+        List<InventoryReservation> inputReservations = reservationRepository
+                .findByRecycleOrderAndStatusForUpdate(recycleOrderId, ReservationStatus.RESERVED);
+        int totalReservedInput = inputReservations.stream()
+                .mapToInt(InventoryReservation::getQuantity)
+                .sum();
+        if (totalReservedInput != inputQty) {
             throw new AppException(ErrorCode.INSUFFICIENT_AVAILABLE_STOCK);
         }
 
         // ── CREDIT: cộng FINISHED vào COMPONENT_WAREHOUSE ─────────────────
         // (we just use the first available location or null for the finished component)
-        Location toLocation = null;
-        if (!fromInventories.isEmpty() && fromInventories.get(0).getLocation() != null) {
-            toLocation = fromInventories.get(0).getLocation();
+        Location toLocation = inputReservations.stream()
+                .map(InventoryReservation::getInventory)
+                .filter(java.util.Objects::nonNull)
+                .map(Inventory::getLocation)
+                .filter(java.util.Objects::nonNull)
+                .filter(location -> location.getStatus() != LocationStatus.MAINTENANCE)
+                .findFirst()
+                .orElseThrow(() -> new AppException(ErrorCode.LOCATION_NOT_FOUND));
+        if (actualYield > 0) {
+            Inventory toInventory = findOrCreateInventory(toItem, componentWarehouse, toLocation);
+            toInventory.setAvailableQuantity(toInventory.getAvailableQuantity() + actualYield);
+            toInventory.setTotalQuantity(toInventory.getTotalQuantity() + actualYield);
+            inventoryRepository.save(toInventory);
+            reserveProducedInventory(order.getPlanningDetail(), toInventory, actualYield);
         }
-        Inventory toInventory = findOrCreateInventory(toItem, componentWarehouse, toLocation);
-        toInventory.setAvailableQuantity(toInventory.getAvailableQuantity() + actualYield);
-        toInventory.setTotalQuantity(toInventory.getTotalQuantity() + actualYield);
-        inventoryRepository.save(toInventory);
-        reserveProducedInventory(order.getPlanningDetail(), toInventory, actualYield);
 
         // ── Cập nhật RecycleOrder ──────────────────────────────────────────
         order.setActualYield(actualYield);
@@ -255,24 +338,18 @@ public class InventoryOperationsServiceImpl implements InventoryOperationsServic
                 "RecycleOrder",
                 recycleOrderId);
 
-        // FIFO Deduction for DEBIT
-        int remaining = inputQty;
-        for (Inventory inv : fromInventories) {
-            if (remaining <= 0) break;
-            int deduct = Math.min(remaining, inv.getAvailableQuantity());
-            inv.setAvailableQuantity(inv.getAvailableQuantity() - deduct);
-            inv.setTotalQuantity(inv.getTotalQuantity() - deduct);
-            inventoryRepository.save(inv);
-            
-            InventoryTransactionDetail debitDetail = buildTxnDetail(txn, fromItem, inv.getLocation(), null, deduct);
+        for (InventoryReservation reservation : inputReservations) {
+            Inventory consumedInventory = consumeRecycleReservation(reservation);
+            InventoryTransactionDetail debitDetail = buildTxnDetail(txn, fromItem,
+                    consumedInventory.getLocation(), null, reservation.getQuantity());
             txn.getDetails().add(debitDetail);
-            
-            remaining -= deduct;
         }
 
-        InventoryTransactionDetail creditDetail = buildTxnDetail(txn, toItem,
-                null, toLocation, actualYield);
-        txn.getDetails().add(creditDetail);
+        if (actualYield > 0) {
+            InventoryTransactionDetail creditDetail = buildTxnDetail(txn, toItem,
+                    null, toLocation, actualYield);
+            txn.getDetails().add(creditDetail);
+        }
         transactionRepository.save(txn);
 
         log.info("Recycle completed [orderId={}, from={} qty={}, to={} yield={}]",
@@ -282,6 +359,7 @@ public class InventoryOperationsServiceImpl implements InventoryOperationsServic
                 order.getOrderNo() + " produced " + actualYield + " " + toItem.getCode() + ".",
                 "RecycleOrder", order.getId(), planningRequester(order.getPlanningDetail()),
                 Set.of(com.restapi.wmsservice.security.PermissionCode.RECYCLE_READ));
+        tryCompletePlanning(order.getPlanningDetail());
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -339,6 +417,9 @@ public class InventoryOperationsServiceImpl implements InventoryOperationsServic
         if (!location.getWarehouse().getId().equals(warehouse.getId())) {
             throw new AppException(ErrorCode.LOCATION_NOT_FOUND);
         }
+        if (location.getStatus() == LocationStatus.MAINTENANCE) {
+            throw new AppException(ErrorCode.LOCATION_NOT_OPERATIONAL);
+        }
 
         Item item = detail.getItem();
 
@@ -384,6 +465,7 @@ public class InventoryOperationsServiceImpl implements InventoryOperationsServic
                 "PurchaseRequest", purchaseRequest.getId(),
                 planningRequester(purchaseRequest.getPlanningDetail()),
                 Set.of(com.restapi.wmsservice.security.PermissionCode.PURCHASE_READ));
+        tryCompletePlanning(purchaseRequest.getPlanningDetail());
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -407,7 +489,7 @@ public class InventoryOperationsServiceImpl implements InventoryOperationsServic
                 .orElseThrow(() -> new AppException(ErrorCode.ASSEMBLY_ORDER_NOT_FOUND));
 
         // Validate status
-        if (order.getStatus() != AssemblyStatus.PENDING && order.getStatus() != AssemblyStatus.IN_PROGRESS) {
+        if (order.getStatus() != AssemblyStatus.IN_PROGRESS) {
             throw new AppException(ErrorCode.ASSEMBLY_ORDER_INVALID_STATUS);
         }
 
@@ -430,9 +512,12 @@ public class InventoryOperationsServiceImpl implements InventoryOperationsServic
         if (!setLocation.getWarehouse().getId().equals(setWarehouse.getId())) {
             throw new AppException(ErrorCode.LOCATION_NOT_FOUND);
         }
+        if (setLocation.getStatus() == LocationStatus.MAINTENANCE) {
+            throw new AppException(ErrorCode.LOCATION_NOT_OPERATIONAL);
+        }
 
         // ── BOM explosion: lấy danh sách components cần dùng ──────────────
-        Map<Long, ComponentRequirement> componentRequirements = explodeLeafComponentRequirements(setItem, assemblyQty);
+        Map<Long, ComponentRequirement> componentRequirements = snapshotAssemblyRequirements(order);
         if (componentRequirements.isEmpty()) {
             throw new AppException(ErrorCode.PLANNING_ENGINE_NO_BOM);
         }
@@ -534,6 +619,7 @@ public class InventoryOperationsServiceImpl implements InventoryOperationsServic
                 order.getAssemblyNo() + " produced " + assemblyQty + " " + setItem.getCode() + ".",
                 "AssemblyOrder", order.getId(), planningRequester(order.getPlanningDetail()),
                 Set.of(com.restapi.wmsservice.security.PermissionCode.ASSEMBLY_READ));
+        tryCompletePlanning(order.getPlanningDetail());
     }
 
     @Override
@@ -569,6 +655,12 @@ public class InventoryOperationsServiceImpl implements InventoryOperationsServic
         }
         String username = detail.getPlanning().getWorkshopRequest().getCreatedBy();
         return username == null || username.isBlank() ? Set.of() : Set.of(username);
+    }
+
+    private void tryCompletePlanning(PlanningDetail detail) {
+        if (detail != null && detail.getPlanning() != null) {
+            planningCompletionService.tryComplete(detail.getPlanning().getId());
+        }
     }
 
     private Inventory consumeReservation(InventoryReservation reservation, int quantity) {
@@ -623,6 +715,25 @@ public class InventoryOperationsServiceImpl implements InventoryOperationsServic
         return inventory;
     }
 
+    private Inventory consumeRecycleReservation(InventoryReservation reservation) {
+        Inventory inventory = reservation.getInventory();
+        int quantity = reservation.getQuantity();
+        if (inventory == null
+                || inventory.getReservedQuantity() < quantity
+                || inventory.getTotalQuantity() < quantity) {
+            throw new AppException(ErrorCode.INSUFFICIENT_AVAILABLE_STOCK);
+        }
+
+        inventory.setTotalQuantity(inventory.getTotalQuantity() - quantity);
+        inventory.setReservedQuantity(inventory.getReservedQuantity() - quantity);
+        inventory.setAvailableQuantity(inventory.getTotalQuantity() - inventory.getReservedQuantity());
+        inventoryRepository.save(inventory);
+
+        reservation.setStatus(ReservationStatus.CONSUMED);
+        reservationRepository.save(reservation);
+        return inventory;
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     // 6. READ: Get Reservations by PlanningDetail
     // ═══════════════════════════════════════════════════════════════════════
@@ -644,53 +755,31 @@ public class InventoryOperationsServiceImpl implements InventoryOperationsServic
      * Nếu warehouseId được chỉ định → tìm trong warehouse đó.
      * Nếu không → quét tất cả COMPONENT_WAREHOUSE tìm record có đủ hàng.
      */
-    private Map<Long, ComponentRequirement> explodeLeafComponentRequirements(Item setItem, int assemblyQty) {
-        Map<Long, ComponentRequirement> requirements = new LinkedHashMap<>();
-        Set<Long> path = new HashSet<>();
-        path.add(setItem.getId());
-        explodeLeafComponentRequirements(setItem, assemblyQty, requirements, path);
-        return requirements;
-    }
-
-    private void explodeLeafComponentRequirements(Item parentItem,
-                                                  int parentQty,
-                                                  Map<Long, ComponentRequirement> requirements,
-                                                  Set<Long> path) {
-        List<Bom> children = bomRepository.findByParentItemId(parentItem.getId());
-        if (children.isEmpty()) {
-            requirements.merge(parentItem.getId(),
-                    new ComponentRequirement(parentItem, parentQty),
-                    (existing, next) -> new ComponentRequirement(
-                            existing.item(), checkedPlanningAdd(existing.quantity(), next.quantity())));
-            return;
-        }
-
-        for (Bom bom : children) {
-            Item childItem = bom.getChildItem();
-            if (path.contains(childItem.getId())) {
-                throw new AppException(ErrorCode.BOM_CYCLE_DETECTED);
+    private Map<Long, ComponentRequirement> snapshotAssemblyRequirements(AssemblyOrder order) {
+        if (order.getComponents().isEmpty()) {
+            List<BomExplosionService.ComponentRequirement> exploded =
+                    bomExplosionService.explodeLeafComponents(order.getSetItem(), order.getQuantity());
+            if (exploded.isEmpty()
+                    || (exploded.size() == 1
+                    && exploded.get(0).item().getId().equals(order.getSetItem().getId()))) {
+                throw new AppException(ErrorCode.PLANNING_ENGINE_NO_BOM);
             }
-            int childQty = checkedPlanningMultiply(parentQty, bom.getQuantity());
-            path.add(childItem.getId());
-            explodeLeafComponentRequirements(childItem, childQty, requirements, path);
-            path.remove(childItem.getId());
+            for (BomExplosionService.ComponentRequirement requirement : exploded) {
+                AssemblyOrderComponent component = new AssemblyOrderComponent();
+                component.setAssemblyOrder(order);
+                component.setItem(requirement.item());
+                component.setRequiredQuantity(requirement.quantity());
+                order.getComponents().add(component);
+            }
+            assemblyOrderRepository.save(order);
         }
-    }
 
-    private int checkedPlanningMultiply(int left, int right) {
-        try {
-            return Math.multiplyExact(left, right);
-        } catch (ArithmeticException exception) {
-            throw new AppException(ErrorCode.PLANNING_QUANTITY_OVERFLOW);
+        Map<Long, ComponentRequirement> requirements = new LinkedHashMap<>();
+        for (AssemblyOrderComponent component : order.getComponents()) {
+            requirements.put(component.getItem().getId(),
+                    new ComponentRequirement(component.getItem(), component.getRequiredQuantity()));
         }
-    }
-
-    private int checkedPlanningAdd(int left, int right) {
-        try {
-            return Math.addExact(left, right);
-        } catch (ArithmeticException exception) {
-            throw new AppException(ErrorCode.PLANNING_QUANTITY_OVERFLOW);
-        }
+        return requirements;
     }
 
     private record ComponentRequirement(Item item, int quantity) {
@@ -772,7 +861,7 @@ public class InventoryOperationsServiceImpl implements InventoryOperationsServic
         reservation.setInventory(inventory);
         reservation.setQuantity(reserveQuantity);
         reservation.setStatus(ReservationStatus.RESERVED);
-        reservation.setExpiredTime(LocalDateTime.now().plusHours(24));
+        reservation.setExpiredTime(null);
         reservationRepository.save(reservation);
     }
 
@@ -781,6 +870,9 @@ public class InventoryOperationsServiceImpl implements InventoryOperationsServic
      * Dùng khi nhận hàng (receiveGoods) hoặc cộng output của Recycle/Assembly.
      */
     private Inventory findOrCreateInventory(Item item, Warehouse warehouse, Location location) {
+        if (location != null && location.getStatus() == LocationStatus.MAINTENANCE) {
+            throw new AppException(ErrorCode.LOCATION_NOT_OPERATIONAL);
+        }
         if (location != null) {
             return inventoryRepository
                     .findByItemIdAndWarehouseIdAndLocationId(item.getId(), warehouse.getId(), location.getId())
@@ -820,6 +912,7 @@ public class InventoryOperationsServiceImpl implements InventoryOperationsServic
         txn.setToWarehouse(to);
         txn.setReferenceType(refType);
         txn.setReferenceId(refId);
+        txn.setCreatedBy(currentActorProvider.getActor());
         return txn;
     }
 
@@ -848,6 +941,8 @@ public class InventoryOperationsServiceImpl implements InventoryOperationsServic
                 .id(reservation.getId())
                 .planningDetailId(reservation.getPlanningDetail() != null
                         ? reservation.getPlanningDetail().getId() : null)
+                .recycleOrderId(reservation.getRecycleOrder() != null
+                        ? reservation.getRecycleOrder().getId() : null)
                 .itemId(reservation.getItem().getId())
                 .itemCode(reservation.getItem().getCode())
                 .warehouseId(reservation.getWarehouse().getId())

@@ -38,6 +38,7 @@ const LocationForm = ({ initialData, warehouses, onSubmit, onCancel }) => {
           onChange={handleChange}
           className="input-field"
           required
+          disabled={Boolean(initialData)}
         >
           {warehouses.map(w => (
             <option key={w.id} value={w.id}>{w.name} ({w.code})</option>

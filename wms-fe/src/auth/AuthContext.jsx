@@ -1,75 +1,72 @@
 import { useEffect, useMemo, useState } from 'react';
+import { SESSION_EXPIRED_EVENT } from '../api/axiosClient';
 import authService from '../services/authService';
 import AuthContext from './auth-context';
-import {
-  clearSession,
-  getAccessToken,
-  getRefreshToken,
-  getTokenPermissions,
-  getTokenRoles,
-  hasUsableAccessToken,
-  saveSession,
-} from './session';
+import { clearLegacyTokenStorage } from './session';
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    const restoreSession = async () => {
-      if (!getAccessToken() && !getRefreshToken()) {
-        setReady(true);
-        return;
-      }
+    clearLegacyTokenStorage();
+    const handleSessionExpired = () => setUser(null);
+    window.addEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
 
+    const restoreSession = async () => {
       try {
-        if ((!hasUsableAccessToken() || getTokenPermissions().length === 0) && getRefreshToken()) {
-          const refreshed = await authService.refresh(getRefreshToken());
-          saveSession(refreshed);
-        }
+        await authService.csrf();
         const currentUser = await authService.myInfo();
         setUser(currentUser);
       } catch {
-        clearSession();
+        setUser(null);
       } finally {
         setReady(true);
       }
     };
 
     restoreSession();
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
   }, []);
 
   const login = async (username, password) => {
-    const response = await authService.login(username, password);
-    saveSession(response);
+    await authService.login(username, password);
     const currentUser = await authService.myInfo();
     setUser(currentUser);
     return currentUser;
   };
 
   const logout = async () => {
-    const accessToken = getAccessToken();
     try {
-      if (accessToken) await authService.logout(accessToken);
+      await authService.logout();
     } finally {
-      clearSession();
       setUser(null);
     }
   };
 
+  const roles = useMemo(
+    () => user?.roles?.map((role) => role.name) || [],
+    [user]
+  );
+  const permissions = useMemo(
+    () => [...new Set((user?.roles || []).flatMap((role) =>
+      (role.permissions || []).map((permission) => permission.code)
+    ))],
+    [user]
+  );
+
   const value = useMemo(() => ({
     user,
-    roles: user?.roles?.map((role) => role.name) || getTokenRoles(),
-    permissions: getTokenPermissions(),
+    roles,
+    permissions,
     ready,
-    authenticated: Boolean(user && getAccessToken()),
+    authenticated: Boolean(user),
     login,
     logout,
-    hasRole: (...allowedRoles) => (user?.roles?.map((role) => role.name) || getTokenRoles())
-      .some((role) => allowedRoles.includes(role)),
-    hasPermission: (...allowedPermissions) => getTokenPermissions()
+    hasRole: (...allowedRoles) => roles.some((role) => allowedRoles.includes(role)),
+    hasPermission: (...allowedPermissions) => permissions
       .some((permission) => allowedPermissions.includes(permission)),
-  }), [user, ready]);
+  }), [user, roles, permissions, ready]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };

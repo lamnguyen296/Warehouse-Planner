@@ -7,7 +7,7 @@ import org.mapstruct.Mapper;
 import org.mapstruct.Mapping;
 import org.mapstruct.MappingTarget;
 
-@Mapper(componentModel = "spring", uses = {ItemMapper.class})
+@Mapper(componentModel = "spring", uses = {ItemMapper.class, AssemblyOrderComponentMapper.class})
 public interface AssemblyOrderMapper {
 
     @Mapping(target = "id", ignore = true)
@@ -17,6 +17,7 @@ public interface AssemblyOrderMapper {
     @Mapping(target = "status", ignore = true)
     @Mapping(target = "planningDetail", ignore = true)
     @Mapping(target = "setItem", ignore = true)
+    @Mapping(target = "components", ignore = true)
     AssemblyOrder toEntity(AssemblyOrderRequest request);
 
     @Mapping(target = "planningDetailId", source = "planningDetail.id")
@@ -29,5 +30,6 @@ public interface AssemblyOrderMapper {
     @Mapping(target = "status", ignore = true)
     @Mapping(target = "planningDetail", ignore = true)
     @Mapping(target = "setItem", ignore = true)
+    @Mapping(target = "components", ignore = true)
     void updateEntity(@MappingTarget AssemblyOrder entity, AssemblyOrderRequest request);
 }

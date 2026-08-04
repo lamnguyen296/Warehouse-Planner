@@ -13,6 +13,7 @@ import com.restapi.wmsservice.repository.*;
 import com.restapi.wmsservice.service.PlanningService;
 import com.restapi.wmsservice.service.InventoryOperationsService;
 import com.restapi.wmsservice.service.NotificationEventPublisher;
+import com.restapi.wmsservice.service.BomExplosionService;
 import lombok.AccessLevel;
 import lombok.RequiredArgsConstructor;
 import lombok.experimental.FieldDefaults;
@@ -42,6 +43,7 @@ public class PlanningServiceImpl implements PlanningService {
     TransferOrderRepository transferOrderRepository;
     InventoryReservationRepository reservationRepository;
     InventoryOperationsService inventoryOperationsService;
+    BomExplosionService bomExplosionService;
     NotificationEventPublisher notificationEventPublisher;
 
     // ── CRUD ──────────────────────────────────────────────────────────────
@@ -160,7 +162,7 @@ public class PlanningServiceImpl implements PlanningService {
 
         // ── Step 2: Guard – không cho chạy song song ──────────────────────
         List<Planning> runningPlannings = planningRepository
-                .findByWorkshopRequestIdAndStatus(workshopRequestId, PlanningStatus.PLANNING);
+                .findByWorkshopRequestIdAndStatusIn(workshopRequestId, activePlanningStatuses());
         if (!runningPlannings.isEmpty()) {
             throw new AppException(ErrorCode.PLANNING_ALREADY_RUNNING);
         }
@@ -172,6 +174,9 @@ public class PlanningServiceImpl implements PlanningService {
 
         for (WorkshopRequestDetail requestDetail : workshopRequest.getDetails()) {
             Item setItem = requestDetail.getItem();
+            if (setItem.getStatus() != ItemStatus.ACTIVE) {
+                throw new AppException(ErrorCode.ITEM_NOT_ACTIVE);
+            }
             int setQtyNeeded = requestDetail.getQuantity();
             int availableSetQty = inventoryRepository.sumAvailableQuantityByItemAndWarehouseType(
                     setItem.getId(), WarehouseType.SET_WAREHOUSE);
@@ -216,6 +221,7 @@ public class PlanningServiceImpl implements PlanningService {
         Map<Long, Item> itemMap = itemRepository.findAllById(itemIds)
                 .stream().collect(Collectors.toMap(Item::getId, i -> i));
 
+        Map<Long, Integer> rawAvailabilityLedger = new HashMap<>();
         for (Map.Entry<Long, Integer> entry : requiredQtyMap.entrySet()) {
             Long itemId = entry.getKey();
             int requiredQty = entry.getValue();
@@ -226,7 +232,7 @@ public class PlanningServiceImpl implements PlanningService {
                 continue;
             }
 
-            PlanningDetail detail = buildPlanningDetail(item, requiredQty);
+            PlanningDetail detail = buildPlanningDetail(item, requiredQty, rawAvailabilityLedger);
             planningDetails.add(detail);
         }
 
@@ -265,6 +271,14 @@ public class PlanningServiceImpl implements PlanningService {
 
         if (planning.getStatus() != PlanningStatus.PLANNING) {
             throw new AppException(ErrorCode.INVALID_REQUEST_STATUS_TRANSITION);
+        }
+
+        WorkshopRequest workshopRequest = workshopRequestRepository.findByIdForUpdate(
+                        planning.getWorkshopRequest().getId())
+                .orElseThrow(() -> new AppException(ErrorCode.WORKSHOP_REQUEST_NOT_FOUND));
+        if (planningRepository.existsByWorkshopRequestIdAndStatusInAndIdNot(
+                workshopRequest.getId(), activePlanningStatuses(), planning.getId())) {
+            throw new AppException(ErrorCode.PLANNING_ALREADY_RUNNING);
         }
 
         planning.setStatus(PlanningStatus.APPROVED);
@@ -430,7 +444,9 @@ public class PlanningServiceImpl implements PlanningService {
      *    2. Nếu đủ → USE_AVAILABLE (dùng raw trực tiếp, sẽ recycle riêng)
      *    3. Nếu không đủ → PURCHASE
      */
-    private PlanningDetail buildPlanningDetail(Item item, int requiredQty) {
+    private PlanningDetail buildPlanningDetail(Item item,
+                                                int requiredQty,
+                                                Map<Long, Integer> rawAvailabilityLedger) {
         PlanningDetail detail = new PlanningDetail();
         detail.setItem(item);
         detail.setRequiredQuantity(requiredQty);
@@ -468,18 +484,29 @@ public class PlanningServiceImpl implements PlanningService {
         if (item.getItemType() == ItemType.FINISHED_COMPONENT) {
             // Tìm RAW_COMPONENT có thể recycle thành FINISHED_COMPONENT này qua BOM ngược
             // BOM ngược: child = finished_component → parent = raw_component (nếu có)
-            List<Bom> rawBoms = bomRepository.findByChildItemId(item.getId());
+            List<Bom> rawBoms = bomRepository.findByChildItemId(item.getId()).stream()
+                    .filter(bom -> bom.getParentItem().getItemType() == ItemType.RAW_COMPONENT)
+                    .filter(bom -> bom.getParentItem().getStatus() == ItemStatus.ACTIVE)
+                    .sorted(Comparator
+                            .comparing((Bom bom) -> Optional.ofNullable(bom.getPriority()).orElse(0))
+                            .thenComparing(Bom::getId))
+                    .toList();
             int recyclableOutput = 0;
             for (Bom rawBom : rawBoms) {
-                if (rawBom.getParentItem().getItemType() == ItemType.RAW_COMPONENT) {
-                    int rawAvailable = inventoryRepository.sumAvailableQuantityByItemAndWarehouseType(
-                            rawBom.getParentItem().getId(), WarehouseType.COMPONENT_WAREHOUSE);
-                    long output = (long) rawAvailable * rawBom.getQuantity();
-                    recyclableOutput = (int) Math.min(shortage, recyclableOutput + output);
-                    if (recyclableOutput == shortage) {
-                        break;
-                    }
+                int remainingOutput = shortage - recyclableOutput;
+                if (remainingOutput <= 0) {
+                    break;
                 }
+                Long rawItemId = rawBom.getParentItem().getId();
+                int rawAvailable = rawAvailabilityLedger.computeIfAbsent(rawItemId,
+                        id -> inventoryRepository.sumAvailableQuantityByItemAndWarehouseType(
+                                id, WarehouseType.COMPONENT_WAREHOUSE));
+                int ratio = rawBom.getQuantity();
+                int inputNeeded = (int) (((long) remainingOutput + ratio - 1) / ratio);
+                int allocatedInput = Math.min(rawAvailable, inputNeeded);
+                int allocatedOutput = Math.min(remainingOutput, checkedMultiply(allocatedInput, ratio));
+                rawAvailabilityLedger.put(rawItemId, rawAvailable - allocatedInput);
+                recyclableOutput += allocatedOutput;
             }
 
             // recycle phần có raw, purchase phần còn thiếu
@@ -521,6 +548,9 @@ public class PlanningServiceImpl implements PlanningService {
 
         for (Bom bom : children) {
             Item childItem = bom.getChildItem();
+            if (childItem.getStatus() != ItemStatus.ACTIVE) {
+                throw new AppException(ErrorCode.ITEM_NOT_ACTIVE);
+            }
             if (path.contains(childItem.getId())) {
                 throw new AppException(ErrorCode.BOM_CYCLE_DETECTED);
             }
@@ -572,6 +602,7 @@ public class PlanningServiceImpl implements PlanningService {
         }
         List<Bom> conversions = bomRepository.findByChildItemId(detail.getItem().getId()).stream()
                 .filter(bom -> bom.getParentItem().getItemType() == ItemType.RAW_COMPONENT)
+                .filter(bom -> bom.getParentItem().getStatus() == ItemStatus.ACTIVE)
                 .sorted(Comparator
                         .comparing((Bom bom) -> Optional.ofNullable(bom.getPriority()).orElse(0))
                         .thenComparing(Bom::getId))
@@ -585,13 +616,13 @@ public class PlanningServiceImpl implements PlanningService {
             int rawAvailable = inventoryRepository.sumAvailableQuantityByItemAndWarehouseType(
                     conversion.getParentItem().getId(), WarehouseType.COMPONENT_WAREHOUSE);
             int ratio = conversion.getQuantity();
-            int inputNeeded = (remainingOutput + ratio - 1) / ratio;
+            int inputNeeded = (int) (((long) remainingOutput + ratio - 1) / ratio);
             int inputQuantity = Math.min(rawAvailable, inputNeeded);
             if (inputQuantity <= 0) {
                 continue;
             }
 
-            int expectedYield = Math.min(remainingOutput, checkedMultiply(inputQuantity, ratio));
+            int expectedYield = checkedMultiply(inputQuantity, ratio);
             RecycleOrder order = new RecycleOrder();
             order.setOrderNo(buildExecutionNumber("RC"));
             order.setPlanningDetail(detail);
@@ -599,9 +630,11 @@ public class PlanningServiceImpl implements PlanningService {
             order.setToItem(detail.getItem());
             order.setQuantity(inputQuantity);
             order.setExpectedYield(expectedYield);
+            order.setConversionRatio(ratio);
             order.setStatus(RecycleStatus.PENDING);
-            recycleOrderRepository.save(order);
-            remainingOutput -= expectedYield;
+            order = recycleOrderRepository.save(order);
+            inventoryOperationsService.reserveRecycleInput(order.getId());
+            remainingOutput -= Math.min(remainingOutput, expectedYield);
         }
         if (remainingOutput > 0) {
             throw new AppException(ErrorCode.INSUFFICIENT_AVAILABLE_STOCK);
@@ -623,7 +656,29 @@ public class PlanningServiceImpl implements PlanningService {
         order.setSetItem(detail.getItem());
         order.setQuantity(quantity);
         order.setStatus(AssemblyStatus.PENDING);
+        populateAssemblySnapshot(order);
         assemblyOrderRepository.save(order);
+    }
+
+    private void populateAssemblySnapshot(AssemblyOrder order) {
+        List<BomExplosionService.ComponentRequirement> requirements =
+                bomExplosionService.explodeLeafComponents(order.getSetItem(), order.getQuantity());
+        if (requirements.isEmpty()
+                || (requirements.size() == 1
+                && requirements.get(0).item().getId().equals(order.getSetItem().getId()))) {
+            throw new AppException(ErrorCode.PLANNING_ENGINE_NO_BOM);
+        }
+        for (BomExplosionService.ComponentRequirement requirement : requirements) {
+            AssemblyOrderComponent component = new AssemblyOrderComponent();
+            component.setAssemblyOrder(order);
+            component.setItem(requirement.item());
+            component.setRequiredQuantity(requirement.quantity());
+            order.getComponents().add(component);
+        }
+    }
+
+    private List<PlanningStatus> activePlanningStatuses() {
+        return List.of(PlanningStatus.PLANNING, PlanningStatus.APPROVED, PlanningStatus.EXECUTING);
     }
 
     private String buildExecutionNumber(String prefix) {

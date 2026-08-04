@@ -10,18 +10,17 @@ import java.util.UUID;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 import com.restapi.wmsservice.dto.request.AuthenticationRequest;
 import com.restapi.wmsservice.dto.request.IntrospectRequest;
-import com.restapi.wmsservice.dto.request.LogoutRequest;
-import com.restapi.wmsservice.dto.request.RefreshRequest;
-import com.restapi.wmsservice.dto.response.AuthenticationResponse;
 import com.restapi.wmsservice.dto.response.IntrospectResponse;
 import com.restapi.wmsservice.entity.User;
 import com.restapi.wmsservice.enums.UserStatus;
 import com.restapi.wmsservice.exception.AppException;
 import com.restapi.wmsservice.exception.ErrorCode;
 import com.restapi.wmsservice.repository.UserRepository;
+import com.restapi.wmsservice.security.IssuedTokens;
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jwt.SignedJWT;
 
@@ -53,7 +52,7 @@ public class AuthenticationServiceImpl implements AuthenticationService {
     }
 
     @Transactional(readOnly = true)
-    public AuthenticationResponse authenticate(AuthenticationRequest request) {
+    public IssuedTokens authenticate(AuthenticationRequest request) {
         PasswordEncoder passwordEncoder = new BCryptPasswordEncoder(10);
         var user = userRepository
                 .findByUsername(request.getUsername())
@@ -71,32 +70,33 @@ public class AuthenticationServiceImpl implements AuthenticationService {
         String refreshToken = UUID.randomUUID().toString();
         tokenStorageService.saveRefreshToken(familyId, user.getUsername(), refreshToken);
 
-        return AuthenticationResponse.builder().accessToken(token).refreshToken(refreshToken).authenticated(true).build();
+        return new IssuedTokens(token, refreshToken);
     }
 
-    public void logout(LogoutRequest request) throws ParseException, JOSEException {
-        try {
-            var signToken = verifyTokenFully(request.getAccessToken());
+    public void logout(String accessToken, String refreshToken) {
+        invalidateFamilyFromRefreshToken(refreshToken);
 
+        if (!StringUtils.hasText(accessToken)) {
+            return;
+        }
+
+        try {
+            var signToken = verifyTokenFully(accessToken);
             String jit = signToken.getJWTClaimsSet().getJWTID();
             Date expiryTime = signToken.getJWTClaimsSet().getExpirationTime();
 
             long remainingTime = expiryTime.getTime() - new Date().getTime();
             tokenStorageService.blacklistAccessToken(jit, remainingTime);
-
             String familyId = signToken.getJWTClaimsSet().getStringClaim("fid");
             tokenStorageService.invalidateRefreshTokenFamily(familyId);
-
-        } catch (AppException exception){
-            log.info("Access Token already expired or invalid");
+        } catch (AppException | JOSEException | ParseException exception) {
+            log.debug("Access token is already expired or invalid during logout");
         }
     }
 
     @Transactional(readOnly = true)
-    public AuthenticationResponse refreshToken(RefreshRequest request) throws ParseException, JOSEException {
-        String reqRefreshToken = request.getRefreshToken();
-        
-        if (reqRefreshToken == null || reqRefreshToken.isEmpty()) {
+    public IssuedTokens refreshToken(String reqRefreshToken) {
+        if (!StringUtils.hasText(reqRefreshToken)) {
             throw new AppException(ErrorCode.UNAUTHENTICATED);
         }
         
@@ -105,9 +105,9 @@ public class AuthenticationServiceImpl implements AuthenticationService {
             throw new AppException(ErrorCode.UNAUTHENTICATED);
         }
         
-        String[] parts = rtVal.split(":");
+        String[] parts = rtVal.split(":", 2);
         if (parts.length != 2) {
-             throw new AppException(ErrorCode.UNAUTHENTICATED);
+            throw new AppException(ErrorCode.UNAUTHENTICATED);
         }
         String familyId = parts[0];
         String username = parts[1];
@@ -115,7 +115,6 @@ public class AuthenticationServiceImpl implements AuthenticationService {
         String currentFamilyRt = tokenStorageService.getCurrentFamilyRefreshToken(familyId);
         
         if (!reqRefreshToken.equals(currentFamilyRt)) {
-            // Reuse detected!
             tokenStorageService.invalidateRefreshTokenFamily(familyId);
             throw new AppException(ErrorCode.UNAUTHENTICATED);
         }
@@ -126,10 +125,30 @@ public class AuthenticationServiceImpl implements AuthenticationService {
         
         var token = jwtService.generateToken(user, familyId);
         String newRefreshToken = UUID.randomUUID().toString();
-        
-        tokenStorageService.saveRefreshToken(familyId, username, newRefreshToken);
 
-        return AuthenticationResponse.builder().accessToken(token).refreshToken(newRefreshToken).authenticated(true).build();
+        if (!tokenStorageService.rotateRefreshToken(
+                familyId, username, reqRefreshToken, newRefreshToken)) {
+            tokenStorageService.invalidateRefreshTokenFamily(familyId);
+            throw new AppException(ErrorCode.UNAUTHENTICATED);
+        }
+
+        return new IssuedTokens(token, newRefreshToken);
+    }
+
+    private void invalidateFamilyFromRefreshToken(String refreshToken) {
+        if (!StringUtils.hasText(refreshToken)) {
+            return;
+        }
+
+        String refreshTokenData = tokenStorageService.getRefreshTokenData(refreshToken);
+        if (!StringUtils.hasText(refreshTokenData)) {
+            return;
+        }
+
+        String[] parts = refreshTokenData.split(":", 2);
+        if (parts.length == 2) {
+            tokenStorageService.invalidateRefreshTokenFamily(parts[0]);
+        }
     }
 
     private void validateAccountStatus(User user) {

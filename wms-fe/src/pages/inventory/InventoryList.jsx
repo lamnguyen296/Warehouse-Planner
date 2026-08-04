@@ -104,7 +104,9 @@ const InventoryList = () => {
     { header: 'Warehouse', accessor: 'warehouseCode' },
     { header: 'Quantity', accessor: 'quantity', render: (row) => <strong>{row.quantity}</strong> },
     { header: 'Status', accessor: 'status', render: (row) => <StatusBadge value={row.status} /> },
-    { header: 'Planning detail', accessor: 'planningDetailId', render: (row) => `#${row.planningDetailId}` },
+    { header: 'Business reference', accessor: 'planningDetailId', render: (row) => row.recycleOrderId
+      ? `Recycle #${row.recycleOrderId}`
+      : row.planningDetailId ? `Planning detail #${row.planningDetailId}` : 'N/A' },
     { header: 'Expires', accessor: 'expiredTime', render: (row) => formatDateTime(row.expiredTime) },
   ];
 

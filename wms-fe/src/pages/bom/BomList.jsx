@@ -7,8 +7,12 @@ import Modal from '../../components/Modal';
 import bomService from '../../services/bomService';
 import itemService from '../../services/itemService';
 import BomForm from './BomForm';
+import { useAuth } from '../../auth/useAuth';
+import { PERMISSIONS as P } from '../../auth/permissions';
 
 const BomList = () => {
+  const { hasPermission } = useAuth();
+  const canManage = hasPermission(P.MASTER_DATA_MANAGE);
   const [data, setData] = useState([]);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -127,10 +131,10 @@ const BomList = () => {
     <div className="animate-fade-in">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
         <h1 style={{ fontSize: '24px', fontWeight: 600 }}>Bill of Materials (BOM)</h1>
-        <Button variant="primary" onClick={handleAdd}>
+        {canManage && <Button variant="primary" onClick={handleAdd}>
           <Plus size={18} />
           Add BOM Mapping
-        </Button>
+        </Button>}
       </div>
 
       <div style={{ backgroundColor: 'var(--bg-paper)', padding: '20px', borderRadius: 'var(--radius-lg)', boxShadow: 'var(--shadow-sm)' }}>
@@ -143,8 +147,8 @@ const BomList = () => {
           <Table 
             columns={columns} 
             data={data} 
-            onEdit={handleEdit}
-            onDelete={handleDelete}
+            onEdit={canManage ? handleEdit : undefined}
+            onDelete={canManage ? handleDelete : undefined}
           />
         )}
       </div>

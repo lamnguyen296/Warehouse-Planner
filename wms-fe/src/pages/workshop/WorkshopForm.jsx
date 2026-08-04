@@ -3,11 +3,14 @@ import { Plus, Trash2 } from 'lucide-react';
 import Button from '../../components/Button';
 import Input from '../../components/Input';
 
-const WorkshopForm = ({ items, onSubmit, onCancel }) => {
+const WorkshopForm = ({ items, initialData, onSubmit, onCancel }) => {
   const sets = items.filter((item) => item.itemType === 'SET' && item.status === 'ACTIVE');
-  const [priority, setPriority] = useState('MEDIUM');
-  const [expectedDate, setExpectedDate] = useState('');
-  const [details, setDetails] = useState([{ itemId: '', quantity: 1 }]);
+  const [priority, setPriority] = useState(initialData?.priority || 'MEDIUM');
+  const [expectedDate, setExpectedDate] = useState(initialData?.expectedDate?.slice(0, 10) || '');
+  const [details, setDetails] = useState(initialData?.details?.map((detail) => ({
+    itemId: detail.itemId,
+    quantity: detail.quantity,
+  })) || [{ itemId: '', quantity: 1 }]);
 
   const updateDetail = (index, field, value) => setDetails((current) =>
     current.map((detail, detailIndex) => detailIndex === index ? { ...detail, [field]: value } : detail)
@@ -38,7 +41,7 @@ const WorkshopForm = ({ items, onSubmit, onCancel }) => {
           <button type="button" className="icon-action" title="Remove line" aria-label="Remove line" disabled={details.length === 1} onClick={() => removeDetail(index)}><Trash2 size={16} /></button>
         </div>
       ))}
-      <div className="form-actions"><Button type="button" variant="secondary" onClick={onCancel}>Cancel</Button><Button type="submit">Create draft</Button></div>
+      <div className="form-actions"><Button type="button" variant="secondary" onClick={onCancel}>Cancel</Button><Button type="submit">{initialData ? 'Save draft' : 'Create draft'}</Button></div>
     </form>
   );
 };

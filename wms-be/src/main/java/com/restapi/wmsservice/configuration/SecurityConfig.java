@@ -1,6 +1,7 @@
 package com.restapi.wmsservice.configuration;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.actuate.autoconfigure.security.servlet.EndpointRequest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -8,16 +9,20 @@ import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
-import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
+import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.CorsUtils;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
-import org.springframework.web.filter.CorsFilter;
+import com.restapi.wmsservice.security.CookieBearerTokenResolver;
+
+import java.util.List;
 
 import static com.restapi.wmsservice.security.PermissionCode.*;
 
@@ -37,6 +42,15 @@ public class SecurityConfig {
     @Autowired
     private CustomJwtDecoder customJwtDecoder;
 
+    @Autowired
+    private CookieBearerTokenResolver cookieBearerTokenResolver;
+
+    @Autowired
+    private AuthCookieProperties authCookieProperties;
+
+    @Value("${app.frontend-origin}")
+    private String frontendOrigin;
+
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity httpSecurity) throws Exception {
         httpSecurity.authorizeHttpRequests(request ->
@@ -44,9 +58,10 @@ public class SecurityConfig {
                         .requestMatchers(EndpointRequest.to("health", "info", "prometheus")).permitAll()
                         .requestMatchers(EndpointRequest.toAnyEndpoint()).denyAll()
                         .requestMatchers(HttpMethod.POST, PUBLIC_ENDPOINTS).permitAll()
+                        .requestMatchers(HttpMethod.GET, "/auth/csrf").permitAll()
                         .requestMatchers(SWAGGER_ENDPOINTS).permitAll()
                         .requestMatchers("/error").permitAll()
-                        .requestMatchers("/ws", "/ws/**").permitAll()
+                        .requestMatchers("/ws", "/ws/**").authenticated()
                         .requestMatchers("/notifications", "/notifications/**").authenticated()
                         .requestMatchers("/users/myInfo").authenticated()
                         .requestMatchers("/users", "/users/**", "/roles", "/roles/**",
@@ -121,35 +136,42 @@ public class SecurityConfig {
                         .anyRequest().denyAll());
 
         httpSecurity.oauth2ResourceServer(oauth2 ->
-                oauth2.jwt(jwtConfigurer ->
+                oauth2.bearerTokenResolver(cookieBearerTokenResolver)
+                        .jwt(jwtConfigurer ->
                                 jwtConfigurer.decoder(customJwtDecoder)
                                         .jwtAuthenticationConverter(jwtAuthenticationConverter()))
                         .authenticationEntryPoint(new JwtAuthenticationEntryPoint())
         );
-        httpSecurity.csrf(AbstractHttpConfigurer::disable);
-        httpSecurity.cors(org.springframework.security.config.Customizer.withDefaults());
+        CookieCsrfTokenRepository csrfTokenRepository = CookieCsrfTokenRepository.withHttpOnlyFalse();
+        csrfTokenRepository.setCookieName("XSRF-TOKEN");
+        csrfTokenRepository.setHeaderName("X-XSRF-TOKEN");
+        csrfTokenRepository.setCookiePath("/");
+        csrfTokenRepository.setCookieCustomizer(cookie -> cookie
+                .secure(authCookieProperties.isSecure())
+                .sameSite(authCookieProperties.getSameSite()));
+
+        httpSecurity.csrf(csrf -> csrf
+                .csrfTokenRepository(csrfTokenRepository)
+                .csrfTokenRequestHandler(new SpaCsrfTokenRequestHandler()));
+        httpSecurity.cors(cors -> cors.configurationSource(corsConfigurationSource()));
+        httpSecurity.sessionManagement(session ->
+                session.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
 
         return httpSecurity.build();
     }
 
     @Bean
-    public CorsFilter corsFilter() {
+    public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration corsConfiguration = new CorsConfiguration();
-
-        corsConfiguration.addAllowedOrigin("http://localhost:5173"); // Example specific origin
-        corsConfiguration.addAllowedMethod("GET");
-        corsConfiguration.addAllowedMethod("POST");
-        corsConfiguration.addAllowedMethod("PUT");
-        corsConfiguration.addAllowedMethod("DELETE");
-        corsConfiguration.addAllowedMethod("OPTIONS");
-        corsConfiguration.addAllowedHeader("Authorization");
-        corsConfiguration.addAllowedHeader("Content-Type");
+        corsConfiguration.setAllowedOrigins(List.of(frontendOrigin));
+        corsConfiguration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
+        corsConfiguration.setAllowedHeaders(List.of("Content-Type", "X-XSRF-TOKEN"));
         corsConfiguration.setAllowCredentials(true);
 
         UrlBasedCorsConfigurationSource urlBasedCorsConfigurationSource = new UrlBasedCorsConfigurationSource();
         urlBasedCorsConfigurationSource.registerCorsConfiguration("/**", corsConfiguration);
 
-        return new CorsFilter(urlBasedCorsConfigurationSource);
+        return urlBasedCorsConfigurationSource;
     }
 
     @Bean

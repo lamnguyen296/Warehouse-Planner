@@ -18,6 +18,7 @@ import com.restapi.wmsservice.repository.PlanningDetailRepository;
 import com.restapi.wmsservice.repository.PurchaseRequestRepository;
 import com.restapi.wmsservice.service.PurchaseRequestService;
 import com.restapi.wmsservice.service.NotificationEventPublisher;
+import com.restapi.wmsservice.service.PlanningCompletionService;
 import lombok.AccessLevel;
 import lombok.RequiredArgsConstructor;
 import lombok.experimental.FieldDefaults;
@@ -41,6 +42,7 @@ public class PurchaseRequestServiceImpl implements PurchaseRequestService {
     PurchaseRequestMapper purchaseRequestMapper;
     PurchaseRequestDetailMapper purchaseRequestDetailMapper;
     NotificationEventPublisher notificationEventPublisher;
+    PlanningCompletionService planningCompletionService;
 
     @Override
     @Transactional
@@ -205,6 +207,10 @@ public class PurchaseRequestServiceImpl implements PurchaseRequestService {
         log.info("PurchaseRequest cancelled [id={}, no={}]", purchaseRequest.getId(), purchaseRequest.getRequestNo());
         publishPurchaseEvent(purchaseRequest, NotificationType.PURCHASE_CANCELLED,
                 "Purchase cancelled", " was cancelled.");
+        if (purchaseRequest.getPlanningDetail() != null) {
+            planningCompletionService.tryComplete(
+                    purchaseRequest.getPlanningDetail().getPlanning().getId());
+        }
         return purchaseRequestMapper.toResponse(purchaseRequest);
     }
 

@@ -15,14 +15,15 @@ import java.util.Optional;
 @Repository
 public interface AssemblyOrderRepository extends JpaRepository<AssemblyOrder, Long> {
 
-    @EntityGraph(attributePaths = {"planningDetail", "setItem"})
+    @EntityGraph(attributePaths = {"planningDetail", "setItem", "components", "components.item"})
     Optional<AssemblyOrder> findById(Long id);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @EntityGraph(attributePaths = {"planningDetail", "setItem", "components", "components.item"})
     @Query("SELECT ao FROM AssemblyOrder ao WHERE ao.id = :id")
     Optional<AssemblyOrder> findByIdForUpdate(@Param("id") Long id);
 
-    @EntityGraph(attributePaths = {"planningDetail", "setItem"})
+    @EntityGraph(attributePaths = {"planningDetail", "setItem", "components", "components.item"})
     List<AssemblyOrder> findAll();
 
     boolean existsByAssemblyNo(String assemblyNo);
